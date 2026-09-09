@@ -1,0 +1,752 @@
+#!/bin/bash
+# what-changed — what actually landed on this machine after `omarchy update`.
+#
+# Sessions come out of /var/log/pacman.log. omarchy-update-keyring always runs
+# `pacman -Sy --noconfirm archlinux-keyring`, so that invocation marks the head
+# of every `omarchy update`. Everything up to the next one is a single session,
+# however many pacman transactions it took (keyring, -Syu, one -U per AUR
+# package). Nothing here writes state, needs sudo, or touches the pacman lock.
+
+set -euo pipefail
+
+readonly SCHEMA_VERSION=1
+readonly REPO="omacom/omarchy"
+readonly API_HOST="api.github.com"
+readonly MAX_ROWS=500
+readonly MAX_FETCH=524288      # cap on a single release body fetched from GitHub
+readonly MAX_STDOUT=524288     # cap on anything this CLI prints
+
+PACMAN_LOG=${WHAT_CHANGED_PACMAN_LOG:-/var/log/pacman.log}
+OMARCHY_STATE=${WHAT_CHANGED_STATE_DIR:-$HOME/.local/state/omarchy}
+CACHE_DIR=${WHAT_CHANGED_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/io.github.bvisagie.what-changed}
+STATE_DIR=${WHAT_CHANGED_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/io.github.bvisagie.what-changed}
+MARKER="$STATE_DIR/last-read"
+
+die() { printf 'what-changed: %s\n' "$*" >&2; exit 1; }
+
+# The plugin version lives in manifest.json and nowhere else, so the two can
+# never drift.
+plugin_version() {
+  local manifest
+  manifest="$(dirname "$(readlink -f "$0")")/../manifest.json"
+  [[ -r $manifest ]] || { echo unknown; return; }
+  jq -r '.version // "unknown"' "$manifest" 2>/dev/null || echo unknown
+}
+
+# Every command prints through here, so the output cap is stated once.
+emit() {
+  local out="$1"
+  (( ${#out} <= MAX_STDOUT )) ||
+    die "output exceeds ${MAX_STDOUT} bytes; narrow the request"
+  printf '%s\n' "$out"
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: what-changed [--json] [<command>] [args]
+
+Commands:
+  sessions              List recent `omarchy update` sessions, newest first
+  show [id]             What landed on this machine (default command)
+  notes [id]            Omarchy release notes for that session's version jump
+  compare-url [id]      Print the GitHub compare URL for the version jump
+  status                Newest session, and whether it has been read yet
+  mark-read [id]        Record a session as read (default: the newest)
+
+Options:
+  --json                Machine-readable output
+  --expand <group>      Include items of a collapsed group (show only)
+  -h, --help            This text
+
+A session id may be given in full or as a unique prefix; where a prefix matches
+more than one session the newest match wins.
+
+Sessions are read from /var/log/pacman.log. Reading never needs sudo and never
+touches the pacman lock. The only thing written is the read-marker under
+$XDG_STATE_HOME/io.github.bvisagie.what-changed/, and the release-note cache.
+USAGE
+}
+
+# ---------------------------------------------------------------- log parsing
+
+# One JSON object per session on stdout, oldest first. Package names and
+# versions are escaped and length-capped here: everything downstream, including
+# the QML overlay, treats this as untrusted text.
+parse_log() {
+  [[ -e $PACMAN_LOG ]] || die "pacman log not found: $PACMAN_LOG"
+  [[ -r $PACMAN_LOG ]] || die "pacman log is not readable: $PACMAN_LOG"
+
+  awk -v maxrows="$MAX_ROWS" '
+    function jesc(s) {
+      gsub(/\\/, "\\\\", s)
+      gsub(/"/, "\\\"", s)
+      gsub(/[[:cntrl:]]/, " ", s)
+      return s
+    }
+    function cap(s, n) { return length(s) > n ? substr(s, 1, n) : s }
+    function field(s, n) { return jesc(cap(s, n)) }
+
+    # [2026-09-08T20:41:29+0200] -> epoch seconds.
+    function epoch_of(ts,   d, off, sign, oh, om, e) {
+      if (ts !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4}$/) return -1
+      d = sprintf("%s %s %s %s %s %s", substr(ts,1,4), substr(ts,6,2), substr(ts,9,2), \
+                  substr(ts,12,2), substr(ts,15,2), substr(ts,18,2))
+      e = mktime(d, 1)
+      if (e < 0) return -1
+      sign = substr(ts, 20, 1); oh = substr(ts, 21, 2) + 0; om = substr(ts, 23, 2) + 0
+      off = oh * 3600 + om * 60
+      return sign == "-" ? e + off : e - off
+    }
+
+    # An `omarchy update` reaches pacman through a small, fixed set of command
+    # shapes. Anything else inside the window -- `omarchy pkg add`, a hand-run
+    # -Syu, an ISO bootstrap -- happened near the update, not during it, and its
+    # packages are not part of what the update landed.
+    function is_update_cmd(c) {
+      if (c == "pacman -Sy --noconfirm archlinux-keyring") return 1              # update-keyring
+      if (c == "pacman -S --noconfirm --needed omarchy-keyring") return 1        # update-keyring, first run
+      if (index(c, "pacman -Syu ") == 1 &&
+          index(c, "--overwrite /usr/share/omarchy/*") > 0) return 1             # update-system-pkgs
+      if (index(c, "pacman -U") == 1 && index(c, "--config /etc/pacman.conf") > 0 &&
+          (index(c, "/.cache/yay/") > 0 || index(c, "/.cache/paru/") > 0)) return 1   # yay, AUR
+      if (index(c, "pacman -D ") == 1 &&
+          index(c, "--config /etc/pacman.conf") > 0) return 1                    # yay, mark explicit
+      # update-orphan-pkgs runs `sudo pacman -Rns <orphans>`; `omarchy pkg
+      # remove` always passes --noconfirm. That is the whole difference.
+      if (index(c, "pacman -Rns ") == 1 && index(c, "--noconfirm") == 0) return 1
+      return 0
+    }
+
+    # Reboot-class rows are held apart from the capped bulk, so a session big
+    # enough to hit the cap can never be the one that hides the kernel.
+    function is_reboot_name(n) {
+      if (n ~ /^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$/) return 1
+      if (n ~ /^linux-firmware/) return 1
+      if (n ~ /^nvidia/) return 1
+      if (n ~ /^(mesa|amdgpu)/) return 1
+      return 0
+    }
+
+    function flush_session(   i, sep, room, shown) {
+      if (!started) return
+      room = maxrows - npri; if (room < 0) room = 0
+      shown = (nev < room ? nev : room)
+      printf "{\"startedAt\":\"%s\",\"finishedAt\":\"%s\",\"startedEpoch\":%d,\"finishedEpoch\":%d,",
+        jesc(s_start), jesc(s_last), s_start_epoch, s_last_epoch
+      printf "\"id\":\"%s\",\"incomplete\":%s,\"omitted\":%d,\"events\":[",
+        s_id, (tx_started > tx_done ? "true" : "false"), nev - shown
+      sep = ""
+      for (i = 1; i <= npri;  i++) { printf "%s%s", sep, pri[i]; sep = "," }
+      for (i = 1; i <= shown; i++) { printf "%s%s", sep, ev[i];  sep = "," }
+      printf "]}\n"
+    }
+
+    function reset_session(ts) {
+      flush_session()
+      started = 1; s_start = ts; s_last = ts
+      s_start_epoch = epoch_of(ts); s_last_epoch = s_start_epoch
+      s_id = s_start_epoch >= 0 ? strftime("%Y%m%dT%H%M%SZ", s_start_epoch, 1) : "unknown"
+      nev = 0; npri = 0; aur = 0; own = 1; tx_started = 0; tx_done = 0
+      delete ev; delete pri
+    }
+
+    {
+      if (substr($0, 1, 1) != "[") next
+      close_ts = index($0, "] ")
+      if (close_ts < 3) next
+      ts = substr($0, 2, close_ts - 2)
+      rest = substr($0, close_ts + 2)
+      if (substr(rest, 1, 1) != "[") next
+      close_cat = index(rest, "] ")
+      if (close_cat < 3) next
+      cat = substr(rest, 2, close_cat - 2)
+      rest = substr(rest, close_cat + 2)
+    }
+
+    cat == "PACMAN" && substr(rest, 1, 8) == "Running " {
+      cmd = substr(rest, 9)
+      if (length(cmd) >= 2) cmd = substr(cmd, 2, length(cmd) - 2)
+      if (cmd == "pacman -Sy --noconfirm archlinux-keyring") { reset_session(ts); next }
+      own = is_update_cmd(cmd)
+      aur = (own && index(cmd, "pacman -U") == 1) ? 1 : 0
+      if (started && own) { s_last = ts; e = epoch_of(ts); if (e >= 0) s_last_epoch = e }
+      next
+    }
+
+    !started || !own { next }
+
+    { s_last = ts; e = epoch_of(ts); if (e >= 0) s_last_epoch = e }
+
+    cat != "ALPM" { next }
+
+    rest == "transaction started"   { tx_started++; next }
+    rest == "transaction completed" { tx_done++; next }
+
+    # upgraded linux (7.1.9.arch1-2 -> 7.2.3.arch1-3)
+    # installed foo (1.0-1)   removed bar (2.0-1)   reinstalled baz (3.0-1)
+    {
+      sp = index(rest, " ")
+      if (sp == 0) next
+      op = substr(rest, 1, sp - 1)
+      if (op != "upgraded" && op != "installed" && op != "removed" &&
+          op != "downgraded" && op != "reinstalled") next
+
+      tail = substr(rest, sp + 1)
+      op_par = index(tail, " (")
+      if (op_par == 0 || substr(tail, length(tail), 1) != ")") next
+      name = substr(tail, 1, op_par - 1)
+      vers = substr(tail, op_par + 2, length(tail) - op_par - 2)
+      if (name !~ /^[A-Za-z0-9@._+-]+$/) next
+
+      from = ""; to = ""
+      arrow = index(vers, " -> ")
+      if (arrow > 0) { from = substr(vers, 1, arrow - 1); to = substr(vers, arrow + 4) }
+      else if (op == "removed") from = vers
+      else to = vers
+
+      row = sprintf("{\"op\":\"%s\",\"name\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"aur\":%s}",
+        op, field(name, 128), field(from, 64), field(to, 64), (aur ? "true" : "false"))
+      if (is_reboot_name(name)) { npri++; pri[npri] = row }
+      else { nev++; if (nev <= maxrows) ev[nev] = row }
+    }
+
+    END { flush_session() }
+  ' "$PACMAN_LOG"
+}
+
+# Migration markers whose mtime lands inside a session window. omarchy-migrate
+# touches ~/.local/state/omarchy/migrations/<id>.sh as it runs each one, so the
+# mtimes survive the update that wrote them.
+migrations_json() {
+  local dir="$OMARCHY_STATE/migrations"
+  [[ -d $dir && -r $dir ]] || { echo null; return; }
+  find "$dir" -maxdepth 1 -type f -name '*.sh' -printf '%T@\t%f\n' 2>/dev/null |
+    awk -F'\t' '{ sub(/\.sh$/, "", $2); printf "{\"epoch\":%d,\"id\":\"%s\"}\n", $1, $2 }' |
+    jq -s '.' 2>/dev/null || echo null
+}
+
+omarchy_channel() {
+  command -v omarchy-channel-current >/dev/null 2>&1 &&
+    omarchy-channel-current 2>/dev/null | head -1 || echo unknown
+}
+
+installed_omarchy_version() {
+  local v
+  v=$(pacman -Q omarchy-dev 2>/dev/null | awk "{print \$2; exit}")
+  [[ -n $v ]] || v=$(pacman -Q omarchy 2>/dev/null | awk "{print \$2; exit}")
+  printf "%s" "$v"
+}
+
+# ------------------------------------------------------- session enrichment
+
+# Everything the log cannot say is derived here, and labelled for what it is.
+# rebootRequired is inferred from kernel-class packages in the session; the live
+# ~/.local/state/omarchy/reboot-required marker is only trusted for the newest
+# session, because omarchy-update-restart clears it.
+enrich_sessions() {
+  local now migrations channel reboot_marker installed
+  now=$(date +%s)
+  migrations=$(migrations_json)
+  channel=$(omarchy_channel)
+  installed=$(installed_omarchy_version)
+  reboot_marker=false
+  [[ -f $OMARCHY_STATE/reboot-required ]] && reboot_marker=true
+
+  parse_log | jq -s \
+    --argjson schema "$SCHEMA_VERSION" \
+    --argjson migrations "$migrations" \
+    --argjson now "$now" \
+    --argjson rebootMarker "$reboot_marker" \
+    --argjson maxRows "$MAX_ROWS" \
+    --arg channel "$channel" \
+    --arg installed "$installed" '
+
+  def rebootClass:
+    test("^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$")
+    or test("^linux-firmware") or test("^nvidia") or test("^(mesa|amdgpu)");
+
+  def omarchyClass:
+    . == "omarchy" or . == "omarchy-dev"
+    or . == "omarchy-settings" or . == "omarchy-settings-dev"
+    or . == "omarchy-keyring";
+
+  def appClass:
+    test("^(brave|firefox|chromium|google-chrome|microsoft-edge|vivaldi|librewolf)")
+    or test("^(docker|podman|containerd)")
+    or test("^(cursor|code|vscodium|zed|neovim|vim|emacs|helix)")
+    or test("^(foot|alacritty|kitty|ghostty|wezterm)")
+    or test("^(hyprland|hypridle|hyprlock|hyprpaper|hyprsunset|hyprpicker|quickshell|waybar|xdg-desktop-portal-hyprland)$")
+    or test("^(obsidian|spotify|discord|signal-desktop|telegram-desktop|slack|zoom|thunderbird|1password|bitwarden)")
+    or test("^(obs-studio|gimp|inkscape|blender|krita|vlc|mpv|steam|lutris|localsend)")
+    or test("^(mise|git|gh|lazygit|lazydocker|tmux|fastfetch|nvim)$");
+
+  def jump($from; $to): if $from == "" or $to == "" or $from == $to then null else "\($from) → \($to)" end;
+
+  # A session owns migration markers touched between its start and the next
+  # session start (or now, for the newest).
+  . as $raw
+  | [ foreach $raw[] as $s (null;
+        (($s.events | map(select(.name == "omarchy" or .name == "omarchy-dev")) | first) as $om
+         | if $om then $om.to else . end);
+        ( . as $after
+          | ($s.events | map(select(.name == "omarchy" or .name == "omarchy-dev")) | first) as $om
+          | if $om then { from: $om.from, to: $om.to, package: $om.name, jumped: true }
+            else { from: $after, to: $after, package: "omarchy", jumped: false } end )
+      ) ] as $ver
+  | [ range(0; $raw | length) as $i
+      | $raw[$i] as $s
+      | (if $i + 1 < ($raw | length) then $raw[$i+1].startedEpoch else $now end) as $nextStart
+      # omarchy-migrate runs after the package upgrade, sometimes after the last
+      # pacman transaction of the run, so allow a grace period past it -- but
+      # never past the next update.
+      | ([$nextStart, ($s.finishedEpoch + 1800)] | min) as $windowEnd
+      | ($s.events | map(select(.name | rebootClass))) as $rebootEvents
+      | (if $migrations == null then null
+         else $migrations
+           | map(select(.epoch >= $s.startedEpoch and .epoch < $windowEnd) | .id)
+           | sort
+         end) as $mig
+      | {
+          id: $s.id,
+          startedAt: $s.startedAt,
+          finishedAt: $s.finishedAt,
+          label: ($s.startedAt | .[0:10] + " " + .[11:16]),
+          channel: $channel,
+          incomplete: $s.incomplete,
+          source: "pacman-log",
+          isLatest: ($i == ($raw | length) - 1),
+          omarchy: ($ver[$i] as $v
+            | (if $i == ($raw | length) - 1 then $installed else "" end) as $fallback
+            | { package: $v.package,
+                from: (($v.from // $fallback) // ""),
+                to:   (($v.to   // $fallback) // ""),
+                jumped: $v.jumped,
+                jump: (if $v.jumped then jump($v.from; $v.to) else null end) }),
+          rebootRequired: (($rebootEvents | length) > 0
+            or ($rebootMarker and $i == ($raw | length) - 1)),
+          rebootReason: (if ($rebootEvents | length) > 0 then ($rebootEvents | map(.name))
+                         elif $rebootMarker and $i == ($raw | length) - 1 then ["reboot-required marker"]
+                         else [] end),
+          migrations: $mig,
+          counts: {
+            upgraded:    ($s.events | map(select(.op == "upgraded"))    | length),
+            installed:   ($s.events | map(select(.op == "installed"))   | length),
+            removed:     ($s.events | map(select(.op == "removed"))     | length),
+            downgraded:  ($s.events | map(select(.op == "downgraded"))  | length),
+            reinstalled: ($s.events | map(select(.op == "reinstalled")) | length),
+            aur:         ($s.events | map(select(.aur))                 | length),
+            total:       ($s.events | length),
+            omitted:     $s.omitted
+          },
+          events: $s.events
+        }
+    ]
+  | { schemaVersion: $schema, sessions: reverse }
+  '
+}
+
+# Bucket a session into the fixed group order the overlay renders verbatim.
+# Precedence: Omarchy, reboot-class, named apps, AUR, everything else.
+group_session() {
+  local expand="${1:-}"
+  jq --arg expand "$expand" '
+  def rebootClass:
+    test("^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$")
+    or test("^linux-firmware") or test("^nvidia") or test("^(mesa|amdgpu)");
+  def omarchyClass:
+    . == "omarchy" or . == "omarchy-dev"
+    or . == "omarchy-settings" or . == "omarchy-settings-dev"
+    or . == "omarchy-keyring";
+  def appClass:
+    test("^(brave|firefox|chromium|google-chrome|microsoft-edge|vivaldi|librewolf)")
+    or test("^(docker|podman|containerd)")
+    or test("^(cursor|code|vscodium|zed|neovim|vim|emacs|helix)")
+    or test("^(foot|alacritty|kitty|ghostty|wezterm)")
+    or test("^(hyprland|hypridle|hyprlock|hyprpaper|hyprsunset|hyprpicker|quickshell|waybar|xdg-desktop-portal-hyprland)$")
+    or test("^(obsidian|spotify|discord|signal-desktop|telegram-desktop|slack|zoom|thunderbird|1password|bitwarden)")
+    or test("^(obs-studio|gimp|inkscape|blender|krita|vlc|mpv|steam|lutris|localsend)")
+    or test("^(mise|git|gh|lazygit|lazydocker|tmux|fastfetch|nvim)$");
+
+  def bucket:
+    if   (.name | omarchyClass) then "omarchy"
+    elif (.name | rebootClass)  then "reboot"
+    elif (.name | appClass)     then "apps"
+    elif .aur                   then "aur"
+    else "other" end;
+
+  def row: { kind: "pkg", op: .op, name: .name, from: .from, to: .to, aur: .aur };
+
+  . as $s
+  | ($s.events | map(. + { bucket: bucket })) as $ev
+  | [ { id: "omarchy",    title: "Omarchy",      items: ($ev | map(select(.bucket == "omarchy") | row) | sort_by(.name)) },
+      { id: "reboot",     title: "Needs reboot", items: ($ev | map(select(.bucket == "reboot")  | row) | sort_by(.name)) },
+      { id: "apps",       title: "Apps",         items: ($ev | map(select(.bucket == "apps")    | row) | sort_by(.name)) },
+      { id: "migrations", title: "Migrations",
+        items: (($s.migrations // []) | map({ kind: "migration", name: . })) },
+      { id: "aur",        title: "AUR",          items: ($ev | map(select(.bucket == "aur")     | row) | sort_by(.name)) },
+      ( ($ev | map(select(.bucket == "other") | row) | sort_by(.name)) as $other
+        | { id: "other",
+            title: (if ($other|length) == 1 then "1 other package"
+                    else "\($other|length) other packages" end),
+            collapsed: true,
+            count: ($other | length),
+            items: (if $expand == "other" then $other else [] end) } )
+    ]
+  | map(select(.id == "other" or (.items | length) > 0))
+  | { schemaVersion: $s.schemaVersion, session: ($s | del(.events, .schemaVersion)), groups: . }
+  '
+}
+
+# ------------------------------------------------------------ release notes
+
+# Tags are immutable, so a fetched release body is cached forever. One request
+# per missing tag, never a poll. The URL is built only from a version that
+# matched a strict regex — raw log text never reaches curl.
+fetch_release() {
+  local version="$1" cache
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  cache="$CACHE_DIR/releases/v$version.json"
+
+  if [[ -s $cache ]]; then cat "$cache"; return 0; fi
+
+  mkdir -p "$CACHE_DIR/releases"
+  chmod 700 "$CACHE_DIR" "$CACHE_DIR/releases" 2>/dev/null || true
+
+  local tmp body
+  tmp=$(mktemp "$CACHE_DIR/releases/.fetch.XXXXXX") || return 1
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp'" RETURN
+
+  if ! curl --silent --show-error --fail --location \
+        --proto '=https' --max-redirs 1 --max-time 10 \
+        --max-filesize "$MAX_FETCH" \
+        -H 'Accept: application/vnd.github+json' \
+        "https://$API_HOST/repos/$REPO/releases/tags/v$version" -o "$tmp" 2>/dev/null; then
+    return 1
+  fi
+
+  body=$(jq -c '{ tag: (.tag_name // ""), name: (.name // ""),
+                  url: (.html_url // ""), body: (.body // "") }' "$tmp" 2>/dev/null) || return 1
+  [[ -n $body && $body != null ]] || return 1
+  printf '%s\n' "$body" >"$cache"
+  chmod 600 "$cache" 2>/dev/null || true
+  printf '%s\n' "$body"
+}
+
+# The tags between two omarchy package versions, inclusive of the destination.
+# 4.0.2-1 -> 4.0.3-1 is one tag; a skipped release yields several, in order.
+tags_between() {
+  local from="$1" to="$2"
+  local f t
+  f=${from%%-*}; t=${to%%-*}
+  [[ $f =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $t =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ $f != "$t" ]] || return 1
+
+  local fmaj fmin fpat tmaj tmin tpat
+  IFS=. read -r fmaj fmin fpat <<<"$f"
+  IFS=. read -r tmaj tmin tpat <<<"$t"
+
+  # Only walk a patch run inside one minor series; anything wider just reports
+  # the destination tag rather than inventing versions that may not exist.
+  if (( fmaj == tmaj && fmin == tmin && tpat > fpat && tpat - fpat <= 20 )); then
+    local p
+    for (( p = fpat + 1; p <= tpat; p++ )); do printf '%s.%s.%s\n' "$tmaj" "$tmin" "$p"; done
+  else
+    printf '%s\n' "$t"
+  fi
+}
+
+notes_json() {
+  local session="$1" from to
+  from=$(jq -r '.omarchy.from' <<<"$session")
+  to=$(jq -r '.omarchy.to' <<<"$session")
+
+  local tags
+  if ! tags=$(tags_between "$from" "$to"); then
+    jq -n --argjson s "$session" \
+      '{ schemaVersion: 1, session: $s, status: "no-jump", releases: [],
+         message: "No Omarchy version change in this session." }'
+    return 0
+  fi
+
+  local releases=() missing=0 tag
+  while IFS= read -r tag; do
+    [[ -n $tag ]] || continue
+    local rel
+    if rel=$(fetch_release "$tag"); then releases+=("$rel"); else missing=1; fi
+  done <<<"$tags"
+
+  local joined
+  joined=$(printf '%s\n' "${releases[@]+"${releases[@]}"}" | jq -s '[.[] | select(. != null)]')
+
+  if [[ $(jq 'length' <<<"$joined") -eq 0 ]]; then
+    jq -n --argjson s "$session" \
+      '{ schemaVersion: 1, session: $s, status: "unavailable", releases: [],
+         message: "Notes unavailable offline." }'
+    return 0
+  fi
+
+  jq -n --argjson s "$session" --argjson r "$joined" --argjson partial "$missing" \
+    '{ schemaVersion: 1, session: $s,
+       status: (if $partial == 1 then "partial" else "ok" end),
+       releases: $r,
+       message: (if $partial == 1 then "Some release notes could not be fetched." else "" end) }'
+}
+
+# ------------------------------------------------------------- read marker
+
+# One line naming the newest session the user has seen. Written by the overlay
+# when it opens, read by the bar widget to decide whether it exists at all.
+# Never fatal: a machine that cannot write state still shows every view.
+read_marker() {
+  [[ -r $MARKER ]] || return 1
+  local id
+  id=$(head -c 64 "$MARKER" 2>/dev/null | tr -d '[:space:]')
+  [[ $id =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || return 1
+  printf '%s' "$id"
+}
+
+write_marker() {
+  local id="$1"
+  [[ $id =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || return 1
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  chmod 700 "$STATE_DIR" 2>/dev/null || true
+  local tmp
+  tmp=$(mktemp "$STATE_DIR/.last-read.XXXXXX" 2>/dev/null) || return 1
+  printf '%s\n' "$id" >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$MARKER" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+compare_url() {
+  local from="$1" to="$2"
+  local f=${from%%-*} t=${to%%-*}
+  [[ $f =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $t =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $f != "$t" ]] || return 1
+  printf 'https://github.com/%s/compare/v%s...v%s\n' "$REPO" "$f" "$t"
+}
+
+# --------------------------------------------------------------- rendering
+
+readonly JQ_HELPERS='
+  def pad($n): tostring as $s | if ($n - ($s | length)) > 0
+    then $s + (" " * ($n - ($s | length))) else $s end;
+  def countLine:
+    [ (if .upgraded    > 0 then "\(.upgraded) upgraded"       else empty end),
+      (if .installed   > 0 then "\(.installed) installed"     else empty end),
+      (if .removed     > 0 then "\(.removed) removed"         else empty end),
+      (if .downgraded  > 0 then "\(.downgraded) downgraded"   else empty end),
+      (if .reinstalled > 0 then "\(.reinstalled) reinstalled" else empty end) ]
+    | join(", ");
+  def versionText:
+    if .kind == "migration" then ""
+    elif .op == "removed" then "removed \(.from)"
+    elif .from != "" and .to != "" then "\(.from) → \(.to)"
+    elif .op == "installed" then "installed \(.to)"
+    elif .op == "reinstalled" then "reinstalled \(.to)"
+    else .to end;
+  def jumpText:
+    if .omarchy.jump then "omarchy \(.omarchy.jump)"
+    elif .omarchy.to != "" then "omarchy \(.omarchy.to) (no version change)"
+    else "omarchy (version unknown)" end;
+'
+
+render_sessions_text() {
+  jq -r "$JQ_HELPERS"'
+    .sessions[]
+    | (.counts | [ (if .upgraded > 0 then "\(.upgraded)↑" else empty end),
+                   (if .installed > 0 then "\(.installed)+" else empty end),
+                   (if .removed > 0 then "\(.removed)-" else empty end),
+                   (if .downgraded > 0 then "\(.downgraded)↓" else empty end),
+                   (if .reinstalled > 0 then "\(.reinstalled)↻" else empty end) ]
+             | join(" ")) as $c
+    | ((.omarchy.from // "") | sub("-[0-9]+$"; "")) as $vf
+    | ((.omarchy.to   // "") | sub("-[0-9]+$"; "")) as $vt
+    | (if .omarchy.jumped then "\($vf) → \($vt)" else $vt end) as $v
+    | "\(.label)  \($v | pad(18))\($c | pad(22))"
+      + (if .rebootRequired then "reboot" else "" end)
+      + (if .incomplete then "  (incomplete)" else "" end)
+    | sub(" +$"; "")
+  '
+}
+
+render_show_text() {
+  jq -r "$JQ_HELPERS"'
+    .session as $s
+    | ([ $s.label, ($s | jumpText), $s.channel,
+         (if $s.rebootRequired then "reboot needed" else empty end) ]
+       | map(select(. != null and . != "")) | join("  ·  ")),
+      ($s.counts | "\(.total) package change" + (if .total == 1 then "" else "s" end) + ": \(countLine)"),
+      (if $s.incomplete then "\n! This session may be incomplete: a pacman transaction did not complete." else empty end),
+      ( .groups[]
+        | . as $g
+        | ($g.items | map(.name | length) | max // 0) as $w
+        | (if $w > 30 then 30 else $w end) as $w
+        | "",
+          $g.title,
+          ( if $g.id == "other" and ($g.items | length) == 0
+            then "  (what-changed show --expand other)"
+            else ($g.items[] | "  \(.name | pad($w))  \(versionText)" | sub(" +$"; ""))
+            end )
+      ),
+      (if $s.counts.omitted > 0 then "\n\($s.counts.omitted) further package rows omitted." else empty end)
+  '
+}
+
+render_notes_text() {
+  jq -r '
+    .session as $s
+    | if .status == "no-jump" or .status == "unavailable" then .message
+      else ( .releases[]
+             | "── \(.name // .tag) ──────────────────────────────────────",
+               "\(.url)", "", (.body // ""), "" ),
+             (if .status == "partial" then .message else empty end)
+      end
+  '
+}
+
+# --------------------------------------------------------------- dispatcher
+
+JSON=0
+EXPAND=""
+CMD=""
+SESSION_ARG=""
+
+while (( $# )); do
+  case "$1" in
+    --json)    JSON=1; shift ;;
+    --expand)  EXPAND=${2:-}; shift 2 ;;
+    --expand=*) EXPAND=${1#*=}; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --version) printf 'what-changed %s\n' "$(plugin_version)"; exit 0 ;;
+    --)        shift ;;
+    -*)        die "unknown option: $1 (try --help)" ;;
+    *)         if [[ -z $CMD ]]; then CMD=$1; else SESSION_ARG=$1; fi; shift ;;
+  esac
+done
+
+# `what-changed 20260908T184129Z` is a session, not a command.
+if [[ -n $CMD && $CMD =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then SESSION_ARG=$CMD; CMD=""; fi
+CMD=${CMD:-show}
+
+ALL=$(enrich_sessions)
+SESSION_COUNT=$(jq '.sessions | length' <<<"$ALL")
+
+# `status` is what the bar widget asks on a machine that may never have been
+# updated, so it answers for an empty history instead of failing.
+if (( SESSION_COUNT == 0 )) && [[ $CMD != status ]]; then
+  die "no update sessions found in $PACMAN_LOG"
+fi
+
+# Newest by default. Otherwise a full id or a prefix; where a prefix matches
+# more than one session the newest wins, which is what `show 2026` should mean.
+pick_session() {
+  local want="$1"
+  if [[ -z $want || $want == latest ]]; then
+    jq -c '.sessions[0]' <<<"$ALL"
+    return
+  fi
+  local hits
+  hits=$(jq -c --arg w "$want" '[.sessions[] | select(.id == $w or (.id | startswith($w)))]' <<<"$ALL")
+  (( $(jq 'length' <<<"$hits") > 0 )) || die "no session matching: $want"
+  jq -c '.[0]' <<<"$hits"
+}
+
+case "$CMD" in
+  sessions)
+    if (( JSON )); then
+      emit "$(jq -c '{ schemaVersion: .schemaVersion,
+                       sessions: [ .sessions[] | del(.events) ] }' <<<"$ALL")"
+    else
+      render_sessions_text <<<"$ALL"
+    fi
+    ;;
+
+  show)
+    session=$(pick_session "$SESSION_ARG")
+    out=$(jq -c --argjson schema "$SCHEMA_VERSION" '. + { schemaVersion: $schema }' <<<"$session" |
+          group_session "$EXPAND")
+    # An expanded group can outgrow the output cap. Fall back to the collapsed
+    # view and say so, rather than printing something the caller must truncate.
+    if (( ${#out} > MAX_STDOUT )); then
+      out=$(jq -c --argjson schema "$SCHEMA_VERSION" '. + { schemaVersion: $schema }' <<<"$session" |
+            group_session "" | jq -c '. + { outputTruncated: true }')
+    fi
+    if (( JSON )); then emit "$out"; else render_show_text <<<"$out"; fi
+    ;;
+
+  notes)
+    session=$(pick_session "$SESSION_ARG")
+    out=$(notes_json "$session")
+    # Release bodies are upstream prose of unbounded length. Give each an equal
+    # share of the budget and mark any that were shortened.
+    if (( ${#out} > MAX_STDOUT )); then
+      out=$(jq -c --argjson budget "$(( MAX_STDOUT / 2 ))" '
+        (.releases | length) as $n
+        | (if $n > 0 then ($budget / $n | floor) else $budget end) as $each
+        | .releases |= map(
+            if (.body | length) > $each
+            then .body = (.body[0:$each] + "\n\u2026") | .bodyTruncated = true
+            else . end)
+        | .outputTruncated = true' <<<"$out")
+    fi
+    if (( JSON )); then emit "$out"; else render_notes_text <<<"$out"; fi
+    ;;
+
+  compare-url)
+    session=$(pick_session "$SESSION_ARG")
+    from=$(jq -r '.omarchy.from' <<<"$session")
+    to=$(jq -r '.omarchy.to' <<<"$session")
+    compare_url "$from" "$to" || die "no Omarchy version change in this session"
+    ;;
+
+  status)
+    newest=$(jq -c 'if (.sessions | length) > 0 then .sessions[0] else null end' <<<"$ALL")
+    newest_id=$(jq -r 'if . == null then "" else .id end' <<<"$newest")
+    # Absent and unreadable are different answers. No marker means this is the
+    # first run, and sessions that predate the install are not news, so adopt
+    # the newest and start quiet. A marker we cannot read means we do not know
+    # what has been seen -- and claiming "all read" would swallow a real one,
+    # so it counts as unread until the next open rewrites it.
+    last=""
+    if [[ -e $MARKER ]]; then
+      last=$(read_marker || printf '%s' "__unreadable__")
+    elif [[ -n $newest_id ]]; then
+      write_marker "$newest_id" && last="$newest_id"
+    fi
+
+    unread=false
+    [[ -n $newest_id && $last != "$newest_id" ]] && unread=true
+    # The sentinel is internal; the caller sees "we have no id" instead.
+    [[ $last == "__unreadable__" ]] && last=""
+
+    out=$(jq -nc --argjson schema "$SCHEMA_VERSION" --argjson newest "$newest" \
+                 --arg last "$last" --argjson unread "$unread" \
+      '{ schemaVersion: $schema,
+         newest: (if $newest == null then null
+                  else ($newest | del(.events)) end),
+         lastRead: $last,
+         unread: $unread }')
+
+    if (( JSON )); then
+      emit "$out"
+    elif [[ $newest_id == "" ]]; then
+      echo "No update sessions yet."
+    elif [[ $unread == true ]]; then
+      jq -r '"Unread: \(.newest.label)  \(.newest.omarchy.to)"' <<<"$out"
+    else
+      jq -r '"Up to date: \(.newest.label) already read"' <<<"$out"
+    fi
+    ;;
+
+  mark-read)
+    # Idempotent, and never the reason a caller fails: the overlay runs this on
+    # every open and must not care whether state is writable.
+    if (( SESSION_COUNT > 0 )); then
+      target=$(jq -r '.id' <<<"$(pick_session "$SESSION_ARG")")
+      write_marker "$target" || true
+    fi
+    exit 0
+    ;;
+
+  *) die "unknown command: $CMD (try --help)" ;;
+esac

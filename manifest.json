@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.bvisagie.what-changed",
+  "name": "What Changed",
+  "version": "1.0.0",
+  "author": "BVisagie",
+  "license": "MIT",
+  "description": "After Omarchy updates, see what actually landed on this machine — then the official release notes for the version you just installed. Not a pending-update indicator. Not a news feed.",
+  "kinds": ["overlay", "bar-widget"],
+  "keepLoaded": false,
+  "entryPoints": {
+    "overlay": "Overlay.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "What Changed",
+    "description": "Appears only when an update has landed that you have not read yet, and disappears once you open it. Never signals pending updates.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
