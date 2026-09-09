@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "BVisagie",
   "license": "MIT",
-  "description": "What actually landed on this machine? What is new in Omarchy? Answered after every Omarchy update.",
+  "description": "What actually changed after your Omarchy update? A clear, per-update summary of what landed on this machine — packages, migrations and the Omarchy version jump.",
   "kinds": [
     "overlay",
     "bar-widget"

@@ -1,8 +1,6 @@
 # What Changed
 
-**What actually landed on this machine? What is new in Omarchy?**
-
-Answered after every Omarchy update.
+**What actually changed after my Omarchy update?**
 
 ![What Changed, showing the packages that landed in one update](preview.png)
 
@@ -10,19 +8,15 @@ Answered after every Omarchy update.
 
 ## The problem
 
-`omarchy update` is a black box once it finishes.
+`omarchy update` can change Omarchy, the kernel, packages, migrations and more —
+but once it finishes, that information is easy to lose.
+`/tmp/omarchy-update.log` is gone after a reboot, the stock bar icon only ever
+meant "the `omarchy` package is behind", and GitHub's release notes describe the
+product, not your computer.
 
-One run upgrades Omarchy *and* the rest of the system — kernel, Chromium, AUR
-packages, migrations — and then `/tmp/omarchy-update.log` is gone after a reboot.
-The stock bar icon only ever meant "the `omarchy` package is behind". GitHub's
-release notes describe the product, not your computer. And "the latest update"
-is ambiguous: last night's 4.0.2 → 4.0.3 and this morning's keyring reinstall
-are both "the latest".
-
-So the two questions at the top do not have the same answer, and once the update
-is finished, nothing on the system answers either of them. This is the reading
-surface for both, scoped to one update run. Several Omarchy plugins will tell
-you what an update *is about to* change; this is the one for afterwards.
+What Changed gives you a clear, per-update summary of what actually changed on
+your machine, scoped to one update run. Other plugins show you what an update
+*will* do; this is the one for what it actually did.
 
 ## The two views
 
