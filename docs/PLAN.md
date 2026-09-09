@@ -23,8 +23,8 @@ and they are not the same list.
 | Plugin | Job | Relationship |
 |---|---|---|
 | `omarchy.system-update` | Pending icon, runs the update | Never replaced, never duplicated |
-| jampick/omarchy-update-review | *Before*: pending packages, sizes | Neighbour. They own pending, this owns applied |
-| News Radar, omarchy-news | Ecosystem news, RSS | Different job entirely |
+| Pending-update reviewers | *Before*: what an update would change | Neighbours. They own pending, this owns applied |
+| News and RSS readers | Ecosystem news | A different job entirely |
 
 The wedge is **after** the update, **this computer**, plus notes for **that
 jump**.

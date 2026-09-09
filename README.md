@@ -25,7 +25,9 @@ There are two different questions here, and they do not have the same answer:
 1. **What actually landed on this machine?**
 2. **What is new in Omarchy?**
 
-This is the reading surface for both, scoped to one update run.
+This is the reading surface for both, scoped to one update run. Several Omarchy
+plugins will tell you what an update *is about to* change; this is the one for
+afterwards.
 
 ## The two views
 
@@ -256,13 +258,6 @@ Then delete the `update.what-changed` entry from
 
 `omarchy plugin remove` takes the plugin out of the bar and the menu, but it does
 not clear XDG state or cache, which is why the second command is listed.
-
-## Alongside Update Review
-
-[jampick/omarchy-update-review](https://github.com/jampick/omarchy-update-review)
-is *what will change*, before you click update. What Changed is *what did
-change*, after it finished. They stack, and neither replaces the stock update
-icon.
 
 ## Requirements
 
