@@ -5,7 +5,7 @@
 # `pacman -Sy --noconfirm archlinux-keyring`, so that invocation marks the head
 # of every `omarchy update`. Everything up to the next one is a single session,
 # however many pacman transactions it took (keyring, -Syu, one -U per AUR
-# package). Nothing here writes state, needs sudo, or touches the pacman lock.
+# package).
 
 set -euo pipefail
 
@@ -25,7 +25,13 @@ CACHE_DIR=${WHAT_CHANGED_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/io.github.bv
 STATE_DIR=${WHAT_CHANGED_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/io.github.bvisagie.what-changed}
 MARKER="$STATE_DIR/last-read"
 
+# An empty history is not a failure of the same kind as an unreadable log, and
+# the overlay has to tell them apart to say something true. Reserve one code for
+# it rather than making callers pattern-match the message.
+readonly EXIT_NO_SESSIONS=3
+
 die() { printf 'what-changed: %s\n' "$*" >&2; exit 1; }
+die_no_sessions() { printf 'what-changed: %s\n' "$*" >&2; exit "$EXIT_NO_SESSIONS"; }
 
 # The plugin version lives in manifest.json and nowhere else, so the two can
 # never drift.
@@ -63,6 +69,9 @@ Options:
 
 A session id may be given in full or as a unique prefix; where a prefix matches
 more than one session the newest match wins.
+
+Exit status: 0 on success, 3 when the log holds no update sessions yet, 1 for
+every real failure (missing or unreadable log, bad arguments).
 
 Sessions are read from /var/log/pacman.log. Reading never needs sudo and never
 touches the pacman lock. The only thing written is the read-marker under
@@ -463,12 +472,15 @@ fetch_release() {
   # shellcheck disable=SC2064
   trap "rm -f '$tmp'" RETURN
 
+  # 2 means "the network said no", which the caller uses to stop walking the
+  # rest of the tags. Offline, one 10s timeout is the honest cost of finding
+  # out; twenty of them is a hung notes tab.
   if ! curl --silent --show-error --fail --location \
         --proto '=https' --max-redirs 1 --max-time 10 \
         --max-filesize "$MAX_FETCH" \
         -H 'Accept: application/vnd.github+json' \
         "https://$API_HOST/repos/$REPO/releases/tags/v$version" -o "$tmp" 2>/dev/null; then
-    return 1
+    return 2
   fi
 
   body=$(jq -c '{ tag: (.tag_name // ""), name: (.name // ""),
@@ -515,11 +527,21 @@ notes_json() {
     return 0
   fi
 
-  local releases=() missing=0 tag
+  # Cache hits stay free, so keep reading tags until one actually has to go to
+  # the network and fails. After that every remaining tag would pay the same
+  # timeout to learn the same thing.
+  local releases=() missing=0 offline=0 tag rc
   while IFS= read -r tag; do
     [[ -n $tag ]] || continue
     local rel
-    if rel=$(fetch_release "$tag"); then releases+=("$rel"); else missing=1; fi
+    if (( offline )) && [[ ! -s $CACHE_DIR/releases/v$tag.json ]]; then missing=1; continue; fi
+    rc=0; rel=$(fetch_release "$tag") || rc=$?
+    if (( rc == 0 )); then
+      releases+=("$rel")
+    else
+      missing=1
+      if (( rc == 2 )); then offline=1; fi
+    fi
   done <<<"$tags"
 
   local joined
@@ -692,7 +714,7 @@ SESSION_COUNT=$(jq '.sessions | length' <<<"$ALL")
 # `status` is what the bar widget asks on a machine that may never have been
 # updated, so it answers for an empty history instead of failing.
 if (( SESSION_COUNT == 0 )) && [[ $CMD != status ]]; then
-  die "no update sessions found in $PACMAN_LOG"
+  die_no_sessions "no update sessions found in $PACMAN_LOG"
 fi
 
 # Newest by default. Otherwise a full id or a prefix; where a prefix matches

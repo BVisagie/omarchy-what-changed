@@ -47,6 +47,17 @@ function text(value, limit) {
   return s
 }
 
+// The CLI writes lowercase diagnostics ("pacman log is not readable: ..."). The
+// overlay shows them as prose, so give them a capital and a full stop without
+// touching a path or a version that may follow.
+function sentence(value) {
+  var s = text(value, 200)
+  if (!s) return ""
+  s = s.charAt(0).toUpperCase() + s.slice(1)
+  if (!/[.!?…]$/.test(s)) s += "."
+  return s
+}
+
 // Release bodies keep their line structure; every other control still goes.
 function multiline(value, limit) {
   if (value === null || value === undefined) return ""
@@ -378,7 +389,7 @@ function sessionVersion(session) {
 
 if (typeof module !== "undefined" && module.exports)
   module.exports = {
-    text: text, multiline: multiline, safeUrl: safeUrl,
+    text: text, multiline: multiline, safeUrl: safeUrl, sentence: sentence,
     intakeSession: intakeSession, intakeItem: intakeItem, intakeGroup: intakeGroup,
     parseSessions: parseSessions, parseShow: parseShow, parseNotes: parseNotes,
     parseStatus: parseStatus,

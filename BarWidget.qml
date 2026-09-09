@@ -9,13 +9,9 @@ import "Model.js" as Model
 //
 // This is not an update indicator and must never become one: it says "there
 // are notes you have not read", never "there are updates to install". That is
-// `omarchy.system-update`'s job. Consequently it carries no badge and no count,
-// and it does not exist at all once the newest session has been read.
-//
-// Nothing here polls. Two things can change the answer, and both are events:
-//   - a new session, which only `omarchy update` creates, and which always ends
-//     in `omarchy-restart-shell` -- so this widget is rebuilt right after it;
-//   - the read marker, which the overlay writes and this FileView watches.
+// `omarchy.system-update`'s job. Hence no badge, no count, and no presence at
+// all once the newest session has been read -- and hence no Timer anywhere in
+// this file, since both things that can change the answer are events.
 BarWidget {
   id: root
   moduleName: "io.github.bvisagie.what-changed"
@@ -87,8 +83,10 @@ BarWidget {
     }
   }
 
-  // The overlay marks the newest session read as it opens; this makes the icon
-  // disappear on that write instead of waiting for the next shell start.
+  // One of the two events: the overlay marks the newest session read as it
+  // opens, and this makes the icon disappear on that write rather than at the
+  // next shell start. (The other is a new session, which only `omarchy update`
+  // creates and which always ends in `omarchy-restart-shell`.)
   FileView {
     path: root.statePath
     watchChanges: true

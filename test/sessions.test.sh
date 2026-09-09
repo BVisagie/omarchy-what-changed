@@ -37,7 +37,20 @@ A=$("$CLI" show 20260908T184129Z --json)
 is "omarchy from"            "$(jq -r '.session.omarchy.from' <<<"$A")" "4.0.2-1"
 is "omarchy to"              "$(jq -r '.session.omarchy.to' <<<"$A")" "4.0.3-1"
 is "omarchy jumped"          "$(jq -r '.session.omarchy.jumped' <<<"$A")" "true"
-is "keyring + syu + 2 AUR + orphans merge into one session" \
+# counts.total is the event count and the buckets partition those same events,
+# so "rows == total - other" holds for any grouping and would survive an AUR
+# package quietly bucketed as `other`. Name the packages instead: one from the
+# keyring run, one from the -Syu, one from each `yay -U`, one from the orphan
+# sweep. If those four transactions stop merging into this session, a name goes
+# missing here.
+NAMES=$(jq -r '[.groups[].items[]?|select(.kind=="pkg")|.name]|sort|join(" ")' <<<"$A")
+OTHER=$(jq -r '[.groups[]|select(.id=="other")|.items[]?|.name]|join(" ")' <<<"$(
+  "$CLI" show 20260908T184129Z --json --expand other)")
+has "keyring run contributes archlinux-keyring" "$NAMES $OTHER" "archlinux-keyring"
+has "-Syu run contributes linux"                "$NAMES $OTHER" "linux"
+has "yay -U contributes ai-usagebar-bin"        "$NAMES $OTHER" "ai-usagebar-bin"
+has "orphan sweep contributes qpdf"             "$NAMES $OTHER" "qpdf"
+is "every event is bucketed exactly once" \
    "$(jq -r '[.groups[].items[]?|select(.kind=="pkg")]|length' <<<"$A")" \
    "$(jq -r '.session.counts.total - (.groups[]|select(.id=="other").count)' <<<"$A")"
 is "upgraded count"    "$(jq -r '.session.counts.upgraded' <<<"$A")" 7
@@ -153,19 +166,64 @@ is "machine view is unaffected by the network" \
 is "compare url is built from the jump" \
    "$("$CLI" compare-url 20260908T184129Z)" "https://github.com/omacom/omarchy/compare/v4.0.2...v4.0.3"
 
+# A multi-tag jump offline used to pay one 10s curl timeout per tag before the
+# notes tab could say "unavailable". The shim counts calls: the first failure
+# means the network is down, and the rest of the walk learns nothing by asking.
+JUMP="$TMP/jump.log"
+{
+  echo "[2026-09-08T20:41:29+0200] [PACMAN] Running 'pacman -Sy --noconfirm archlinux-keyring'"
+  echo "[2026-09-08T20:41:35+0200] [PACMAN] Running 'pacman -Syu --noconfirm --overwrite /usr/share/omarchy/*'"
+  echo "[2026-09-08T20:42:01+0200] [ALPM] transaction started"
+  echo "[2026-09-08T20:42:02+0200] [ALPM] upgraded omarchy (4.0.2-1 -> 4.0.9-1)"
+  echo "[2026-09-08T20:42:03+0200] [ALPM] transaction completed"
+} >"$JUMP"
+
+mkdir -p "$TMP/counting"
+printf '#!/bin/sh\nprintf x >>"%s"\nexit 6\n' "$TMP/curl.calls" >"$TMP/counting/curl"
+chmod +x "$TMP/counting/curl"
+
+: >"$TMP/curl.calls"
+N4=$(PATH="$TMP/counting:$PATH" WHAT_CHANGED_PACMAN_LOG="$JUMP" \
+     WHAT_CHANGED_CACHE_DIR="$TMP/cache-jump" "$CLI" notes --json)
+is "a seven-tag jump offline reports unavailable" "$(jq -r '.status' <<<"$N4")" "unavailable"
+is "and stops after the first network failure" "$(wc -c <"$TMP/curl.calls" | tr -d ' ')" 1
+
+# Cache hits cost nothing, so they are still served after the network is known
+# to be down -- the walk stops fetching, it does not stop reporting.
+mkdir -p "$TMP/cache-partial/releases"
+cp "$ROOT/test/fixtures/release-v4.0.3.json" "$TMP/cache-partial/releases/v4.0.3.json"
+: >"$TMP/curl.calls"
+N5=$(PATH="$TMP/counting:$PATH" WHAT_CHANGED_PACMAN_LOG="$JUMP" \
+     WHAT_CHANGED_CACHE_DIR="$TMP/cache-partial" "$CLI" notes --json)
+is "a cached tag still renders alongside failures" "$(jq -r '.status' <<<"$N5")" "partial"
+is "and the cached release is the one kept" "$(jq -r '.releases[0].tag' <<<"$N5")" "v4.0.3"
+is "the cache hit costs no fetch" "$(wc -c <"$TMP/curl.calls" | tr -d ' ')" 1
+
 echo
 echo "failure modes"
 out=$(WHAT_CHANGED_PACMAN_LOG=/nope/pacman.log "$CLI" sessions 2>&1); rc=$?
 is  "missing log exits non-zero" "$rc" 1
 has "missing log says which file" "$out" "/nope/pacman.log"
+# The overlay tells "you have never updated" apart from "the log did not read"
+# by exit code alone, so 3 is part of the contract and not an implementation
+# detail. Everything genuinely broken stays 1.
 : >"$TMP/empty.log"
 out=$(WHAT_CHANGED_PACMAN_LOG="$TMP/empty.log" "$CLI" sessions 2>&1); rc=$?
-is  "a log with no sessions exits non-zero" "$rc" 1
+is  "a log with no sessions exits 3, not 1" "$rc" 3
 has "and says so plainly" "$out" "no update sessions found"
 touch "$TMP/locked.log"; chmod 000 "$TMP/locked.log"
 out=$(WHAT_CHANGED_PACMAN_LOG="$TMP/locked.log" "$CLI" sessions 2>&1); rc=$?
 is  "an unreadable log exits non-zero" "$rc" 1
 has "and names readability" "$out" "not readable"
+# Every command shells out to jq. Without it the CLI must fail rather than print
+# a partial document the overlay would then try to parse.
+mkdir -p "$TMP/nojq"; printf '#!/bin/sh\nexit 127\n' >"$TMP/nojq/jq"
+chmod +x "$TMP/nojq/jq"
+out=$(PATH="$TMP/nojq:$PATH" "$CLI" sessions --json 2>/dev/null); rc=$?
+[[ $rc -ne 0 ]] && ok "a missing jq exits non-zero" \
+  || no "a missing jq exits non-zero" "non-zero" "$rc"
+is "and prints nothing on stdout" "$out" ""
+
 out=$("$CLI" bogus 2>&1); rc=$?
 is "an unknown command exits non-zero" "$rc" 1
 out=$("$CLI" show 19990101T000000Z 2>&1); rc=$?

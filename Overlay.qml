@@ -8,11 +8,18 @@ import "Model.js" as Model
 
 // What Changed — a reading surface for the update that just ran.
 //
-// The overlay never inspects the system itself: every fact on screen comes from
-// `bin/what-changed --json`, which is the only thing this file executes. No
-// pacman, no git, no network, and every Process command is a fixed argv array.
+// Every fact on screen comes from `bin/what-changed --json`. That is a boundary,
+// not an implementation detail: the CLI is the only thing this file executes, so
+// each Process command stays a fixed argv array and every string it returns is
+// rendered as Text.PlainText.
 Item {
   id: root
+
+  // Injected by the shell's panel Loader when it mounts this plugin. Without
+  // them a dismissal can only hide the card; the host still counts the plugin
+  // as open and keeps the Loader mounted for the rest of the shell session.
+  property var shell: null
+  property var manifest: null
 
   property bool opened: false
   property string tab: "machine"          // "machine" | "notes"
@@ -21,6 +28,10 @@ Item {
   property int sessionIndex: 0
   property string sessionsError: ""
   property bool sessionsLoading: true
+  // An empty history and an unreadable log are different answers, and only one
+  // of them is fixed by running an update. The CLI separates them with exit 3.
+  property bool sessionsUnavailable: false
+  property string sessionsStderr: ""
 
   property var session: null
   property var groups: []
@@ -78,8 +89,20 @@ Item {
     markReadProc.running = true
   }
 
+  // Host-initiated teardown (`shell hide` lands here). It must not call back
+  // into shell.hide(), which is what invoked it.
   function close() { root.opened = false }
-  function toggle() { if (root.opened) root.close(); else root.open("{}") }
+
+  // Every user-initiated dismissal — Esc, q, the scrim — goes through the host
+  // so `keepLoaded: false` actually unloads us again.
+  function dismiss() {
+    if (root.shell && typeof root.shell.hide === "function")
+      root.shell.hide((root.manifest && root.manifest.id) || "io.github.bvisagie.what-changed")
+    else
+      root.close()
+  }
+
+  function toggle() { if (root.opened) root.dismiss(); else root.open("{}") }
 
   property string requestedSessionId: ""
 
@@ -101,6 +124,8 @@ Item {
   function reloadSessions() {
     root.sessionsLoading = true
     root.sessionsError = ""
+    root.sessionsUnavailable = false
+    root.sessionsStderr = ""
     sessionsProc.running = false
     sessionsProc.running = true
   }
@@ -206,12 +231,29 @@ Item {
       waitForEnd: true
       onStreamFinished: root.onSessionsRead(text)
     }
-    onExited: function (code) {
-      if (code !== 0 && root.sessionsLoading) {
-        root.sessionsLoading = false
-        root.sessions = []
-        root.sessionsError = "No update sessions found in /var/log/pacman.log."
+    // Exit and stream-finished have no guaranteed order: when a failed exit
+    // beats the collector, upgrade the generic message once the real one lands.
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.sessionsStderr = Model.text(String(text || "").replace(/^what-changed:\s*/, "").trim(), 200)
+        if (root.sessionsUnavailable && root.sessionsStderr !== "")
+          root.sessionsError = Model.sentence(root.sessionsStderr)
       }
+    }
+    onExited: function (code) {
+      if (code === 0 || !root.sessionsLoading) return
+      root.sessionsLoading = false
+      root.sessions = []
+      // 3 is "this machine has no update sessions yet", which is a true and
+      // complete answer. Anything else means the log itself did not read.
+      root.sessionsUnavailable = (code !== 3)
+      if (!root.sessionsUnavailable)
+        root.sessionsError = "No update sessions found in /var/log/pacman.log."
+      else
+        root.sessionsError = root.sessionsStderr !== ""
+          ? Model.sentence(root.sessionsStderr)
+          : "Could not read /var/log/pacman.log."
     }
   }
 
@@ -274,7 +316,7 @@ Item {
 
     Rectangle { anchors.fill: parent; color: root.scrim }
 
-    MouseArea { anchors.fill: parent; onClicked: root.close() }
+    MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
 
     BorderSurface {
       id: card
@@ -304,7 +346,7 @@ Item {
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function (event) {
           if (event.key === Qt.Key_Escape || event.key === Qt.Key_Q) {
-            root.close(); event.accepted = true
+            root.dismiss(); event.accepted = true
           } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
             root.toggleTab(); event.accepted = true
           } else if (event.key === Qt.Key_BracketLeft) {
@@ -501,7 +543,9 @@ Item {
               font.pixelSize: Style.font.subtitle
             }
             Text {
-              text: "Sessions are read from /var/log/pacman.log. Run an update, then reopen this."
+              text: root.sessionsUnavailable
+                ? "Every session is reconstructed from that file, so there is nothing to show until it reads."
+                : "Sessions are read from /var/log/pacman.log. Run an update, then reopen this."
               textFormat: Text.PlainText
               color: root.foreground
               opacity: 0.6
@@ -518,9 +562,15 @@ Item {
         Text {
           id: footer
           anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+          // `o` only resolves a compare URL when the session actually jumped
+          // versions, so it is only offered when it will do something.
+          readonly property bool canCompare:
+            !!(root.currentSession && root.currentSession.omarchy && root.currentSession.omarchy.jumped)
           text: root.tab === "machine"
             ? "Tab notes   ·   [ ] session   ·   j k scroll   ·   e expand   ·   Esc close"
-            : "Tab machine   ·   [ ] session   ·   j k scroll   ·   o compare on GitHub   ·   Esc close"
+            : (footer.canCompare
+               ? "Tab machine   ·   [ ] session   ·   j k scroll   ·   o compare on GitHub   ·   Esc close"
+               : "Tab machine   ·   [ ] session   ·   j k scroll   ·   Esc close")
           textFormat: Text.PlainText
           color: root.foreground
           opacity: 0.45

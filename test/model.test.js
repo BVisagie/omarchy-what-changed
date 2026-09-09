@@ -97,6 +97,22 @@ console.log('untrusted text is flattened')
 }
 
 console.log('')
+console.log('CLI diagnostics become sentences')
+{
+  is('a lowercase diagnostic is capitalised and stopped',
+     M.sentence('pacman log is not readable: /var/log/pacman.log'),
+     'Pacman log is not readable: /var/log/pacman.log.')
+  is('an existing full stop is not doubled',
+     M.sentence('no update sessions found.'), 'No update sessions found.')
+  is('an ellipsis counts as terminal', M.sentence('reading…'), 'Reading…')
+  is('nothing in, nothing out', M.sentence(''), '')
+  is('a null message does not become "Null."', M.sentence(null), '')
+  is('controls are flattened like any other untrusted text',
+     M.sentence('bad' + C(27) + '[31m news'), 'Bad [31m news.')
+  truthy('a runaway message is capped', M.sentence('x'.repeat(5000)).length <= 210)
+}
+
+console.log('')
 console.log('release bodies keep their shape but not their controls')
 {
   is('newlines survive', M.multiline('# Title\n\nBody text', 1000), '# Title\n\nBody text')

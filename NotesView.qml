@@ -5,11 +5,10 @@ import "Model.js" as Model
 
 // The official release notes for the version jump this session made.
 //
-// Bodies are Markdown authored upstream and fetched over the network, so they
-// are untrusted: every block below is Text.PlainText and nothing is ever handed
-// to a rich-text renderer. Parsing to headings, bullets and paragraphs is
-// structure, not rich text -- it is what stops "## Heading" and
-// "[label](https://long.url)" from landing in the middle of a sentence.
+// Parsing to headings, bullets and paragraphs is structure, not rich text: it
+// is what stops "## Heading" and "[label](https://long.url)" from landing in
+// the middle of a sentence, and it is why every block below can still be a
+// Text.PlainText that never reaches a rich-text renderer.
 //
 // In this release no per-bullet status is claimed: an honest wall of notes
 // beats a wrong checkmark.

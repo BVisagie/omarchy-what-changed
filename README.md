@@ -94,6 +94,17 @@ Nothing polls. Two events can change the answer and both are handled directly:
 - The **read marker** is watched with a `FileView`, so the icon clears the
   instant you open the overlay.
 
+The one case the shell restart does not cover is an update run over ssh or a TTY,
+where `omarchy-restart-shell` could not run. Force a re-check with:
+
+```bash
+omarchy-shell -q io.github.bvisagie.what-changed refresh
+```
+
+That handler lives on the bar widget, so it exists only while the widget is in
+`bar.layout` — which is the normal installation, and the only one where there is
+an icon to re-check in the first place.
+
 ### If you would rather not have the icon
 
 Note that `omarchy plugin disable` turns off the **whole plugin**, not just the
@@ -115,14 +126,8 @@ top-level `plugins` array:
 ```
 
 Then `omarchy-restart-shell`. The overlay stays summonable from the menu and the
-widget is never instantiated.
-
-The one case the shell restart does not cover is an update run over ssh or a TTY,
-where `omarchy-restart-shell` could not run. Force a re-check with:
-
-```bash
-omarchy-shell -q io.github.bvisagie.what-changed refresh
-```
+widget is never instantiated — and with it goes both the icon and the `refresh`
+handler above, which that configuration no longer has anything to refresh.
 
 ## Keys
 
@@ -189,6 +194,16 @@ Migrations
 
 A session id may be given in full (`20260908T184129Z`) or as a prefix. Where a
 prefix matches more than one session, the newest match wins.
+
+| Exit | Means |
+|---|---|
+| `0` | Success |
+| `3` | The log holds no update sessions yet |
+| `1` | A real failure: missing or unreadable log, unknown command, no such session |
+
+`3` exists so a caller can tell "this machine has never been updated" — a true
+and complete answer — from "the log did not read". The overlay uses it to avoid
+reporting a permissions problem as an empty history.
 
 ---
 
@@ -494,6 +509,7 @@ corresponding behaviour is what breaks:
 | The menu merges a user JSONC extension | `shell/plugins/menu/Menu.qml` | The `Update › What changed` entry |
 | Third-party widgets receive `bar`, `moduleName`, `settings`, and `bar.shell` exposes `summon` | `shell/plugins/bar/Bar.qml`, `shell/Ui/PluginBarApi.qml` | The widget opening the overlay in-process |
 | For a `bar-widget` plugin, "enabled" means placement in `bar.layout` | `shell/services/PluginRegistry.qml` | Why enabling needs `--section` |
+| The panel Loader injects `shell` and `manifest`, and the scoped `shell.hide` accepts the plugin's own id | `shell/shell.qml`, `shell/Ui/PluginShellApi.qml` | Dismissing the overlay unloads it, so `keepLoaded: false` keeps meaning something |
 
 ## Testing
 
