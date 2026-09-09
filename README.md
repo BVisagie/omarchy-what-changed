@@ -1,9 +1,9 @@
 # What Changed
 
-**After Omarchy updates, see what actually landed on this machine — then the
-official release notes for the version you just installed.**
+**What actually landed on this machine? What is new in Omarchy?**
 
-Not a pending-update indicator. Not a news feed.
+Two questions after every Omarchy update, answered for the version jump you
+actually took. Not a pending-update indicator. Not a news feed.
 
 ![What Changed, showing the packages that landed in one update](preview.png)
 
@@ -20,14 +20,10 @@ release notes describe the product, not your computer. And "the latest update"
 is ambiguous: last night's 4.0.2 → 4.0.3 and this morning's keyring reinstall
 are both "the latest".
 
-There are two different questions here, and they do not have the same answer:
-
-1. **What actually landed on this machine?**
-2. **What is new in Omarchy?**
-
-This is the reading surface for both, scoped to one update run. Several Omarchy
-plugins will tell you what an update *is about to* change; this is the one for
-afterwards.
+So the two questions at the top do not have the same answer, and once the update
+is finished, nothing on the system answers either of them. This is the reading
+surface for both, scoped to one update run. Several Omarchy plugins will tell
+you what an update *is about to* change; this is the one for afterwards.
 
 ## The two views
 
