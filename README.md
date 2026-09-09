@@ -290,6 +290,22 @@ the plugin is**, so treat them as requirements rather than preferences.
    GitHub. Everything is `Text.PlainText`; intake rebuilds objects from known
    fields only; every string is control-character flattened and length-capped.
 
+## Out of scope
+
+Not a backlog — these are things the plugin declines to do, and a change that
+adds one is a change to what it is:
+
+- **Anything about pending updates**: scanning for them, listing them, an apply
+  button, or a badge. That is `omarchy.system-update`'s job.
+- **Arch news, `.pacnew` handling, snapper diffs, AI summaries.** Other plugins
+  cover these and cover them better.
+- **`mise` results.** No available source records them per session, so claiming
+  them would mean guessing.
+
+Per-bullet `landed` / `not installed` / `n/a here` annotations on release notes
+are wanted, but only once they can be right: a wrong checkmark is worse than an
+honest `unknown`.
+
 ## Repo map
 
 | File | Role |
