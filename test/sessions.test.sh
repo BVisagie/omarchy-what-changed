@@ -212,6 +212,99 @@ is "and reports nothing unread"                   "$(jq -r '.unread' <<<"$out")"
 is "with a null newest"                           "$(jq -r '.newest' <<<"$out")" "null"
 
 echo
+echo "a session does not own the days after it"
+DRIFT="$TMP/drift.log"
+{
+  echo "[2026-09-08T20:41:29+0200] [PACMAN] Running 'pacman -Sy --noconfirm archlinux-keyring'"
+  echo "[2026-09-08T20:41:35+0200] [PACMAN] Running 'pacman -Syu --noconfirm --overwrite /usr/share/omarchy/*'"
+  echo "[2026-09-08T20:42:01+0200] [ALPM] transaction started"
+  echo "[2026-09-08T20:42:02+0200] [ALPM] upgraded omarchy (4.0.2-1 -> 4.0.3-1)"
+  echo "[2026-09-08T20:43:59+0200] [ALPM] transaction completed"
+  # Still inside the run: yay upgrading AUR packages, then the orphan sweep.
+  echo "[2026-09-08T20:45:31+0200] [PACMAN] Running 'pacman -U --noconfirm --config /etc/pacman.conf -- /home/t/.cache/yay/inrun-bin/inrun-bin-2.0-1-x86_64.pkg.tar.zst'"
+  echo "[2026-09-08T20:45:31+0200] [ALPM] upgraded inrun-bin (1.0-1 -> 2.0-1)"
+  echo "[2026-09-08T20:47:10+0200] [PACMAN] Running 'pacman -Rns sweptorphan'"
+  echo "[2026-09-08T20:47:10+0200] [ALPM] removed sweptorphan (1.0-1)"
+  # Two days later, by hand. Same shapes, different event.
+  echo "[2026-09-10T14:00:00+0200] [PACMAN] Running 'pacman -U --noconfirm --config /etc/pacman.conf -- /home/t/.cache/yay/later-bin/later-bin-1.0-1-x86_64.pkg.tar.zst'"
+  echo "[2026-09-10T14:00:01+0200] [ALPM] installed later-bin (1.0-1)"
+  echo "[2026-09-10T14:05:00+0200] [PACMAN] Running 'pacman -Rns leftover'"
+  echo "[2026-09-10T14:05:00+0200] [ALPM] removed leftover (2.0-1)"
+} >"$DRIFT"
+D=$(WHAT_CHANGED_PACMAN_LOG="$DRIFT" "$CLI" show --json --expand other)
+is "an AUR upgrade inside the run is kept" \
+   "$(jq -r '[.groups[].items[]?|select(.name=="inrun-bin")]|length' <<<"$D")" 1
+is "the orphan sweep inside the run is kept" \
+   "$(jq -r '[.groups[].items[]?|select(.name=="sweptorphan")]|length' <<<"$D")" 1
+is "an AUR install two days later is not" \
+   "$(jq -r '[.groups[].items[]?|select(.name=="later-bin")]|length' <<<"$D")" 0
+is "nor is a hand-run -Rns two days later" \
+   "$(jq -r '[.groups[].items[]?|select(.name=="leftover")]|length' <<<"$D")" 0
+is "and the counts agree" "$(jq -r '.session.counts.total' <<<"$D")" 3
+
+# yay -S --needed is `omarchy pkg aur add`; yay -Sua, which the update runs,
+# never passes it. So this is excluded even while the window is open.
+ADD="$TMP/aur-add.log"
+{
+  echo "[2026-09-08T20:41:29+0200] [PACMAN] Running 'pacman -Sy --noconfirm archlinux-keyring'"
+  echo "[2026-09-08T20:41:35+0200] [PACMAN] Running 'pacman -Syu --noconfirm --overwrite /usr/share/omarchy/*'"
+  echo "[2026-09-08T20:42:02+0200] [ALPM] upgraded omarchy (4.0.2-1 -> 4.0.3-1)"
+  echo "[2026-09-08T20:44:00+0200] [PACMAN] Running 'pacman -U --needed --noconfirm --config /etc/pacman.conf -- /home/t/.cache/yay/handadded/handadded-1.0-1-x86_64.pkg.tar.zst'"
+  echo "[2026-09-08T20:44:01+0200] [ALPM] installed handadded (1.0-1)"
+} >"$ADD"
+is "omarchy pkg aur add is excluded even inside the window" \
+   "$(WHAT_CHANGED_PACMAN_LOG="$ADD" "$CLI" show --json --expand other \
+      | jq -r '[.groups[].items[]?|select(.name=="handadded")]|length')" 0
+
+echo
+echo "grouping does not mistake libraries for applications"
+GRP="$TMP/group.log"
+{
+  echo "[2026-09-08T20:41:29+0200] [PACMAN] Running 'pacman -Sy --noconfirm archlinux-keyring'"
+  echo "[2026-09-08T20:41:35+0200] [PACMAN] Running 'pacman -Syu --noconfirm --overwrite /usr/share/omarchy/*'"
+  for n in codec2 vim-runtime mesa-utils dockerfile-language-server emacs-lisp-mode git-lfs \
+           code vim mesa helix-git ghostty-bin mise-bin brave-origin-bin docker-compose \
+           nvidia-utils linux-firmware-nvidia; do
+    echo "[2026-09-08T20:42:02+0200] [ALPM] upgraded $n (1.0-1 -> 1.0-2)"
+  done
+} >"$GRP"
+G=$(WHAT_CHANGED_PACMAN_LOG="$GRP" "$CLI" show --json --expand other)
+group_of() { jq -r --arg n "$1" '[.groups[]|select(.items|map(.name)|index($n))|.id][0] // "missing"' <<<"$G"; }
+for n in codec2 vim-runtime mesa-utils dockerfile-language-server emacs-lisp-mode git-lfs; do
+  is "$n is not an app" "$(group_of "$n")" "other"
+done
+for n in code vim helix-git ghostty-bin mise-bin brave-origin-bin docker-compose; do
+  is "$n is an app" "$(group_of "$n")" "apps"
+done
+for n in mesa nvidia-utils linux-firmware-nvidia; do
+  is "$n wants a reboot" "$(group_of "$n")" "reboot"
+done
+
+echo
+echo "options fail loudly"
+out=$("$CLI" --expand 2>&1); rc=$?
+is  "--expand with no argument exits non-zero" "$rc" 1
+has "and says what it wanted" "$out" "requires a group name"
+out=$("$CLI" show --expand 2>&1); rc=$?
+is  "--expand as the last argument exits non-zero" "$rc" 1
+out=$("$CLI" show --expand --json 2>&1); rc=$?
+is  "--expand followed by a flag is refused" "$rc" 1
+is  "--expand=other still works" \
+    "$("$CLI" show 20260908T184129Z --json --expand=other | jq -r '.groups[]|select(.id=="other")|(.items|length)==.count')" "true"
+
+echo
+echo "a migration id that is not an id is skipped, not fatal"
+# Its own state dir: the migration-window tests above populate the shared one.
+mkdir -p "$TMP/hostile/migrations"
+touch -d "2026-09-08T20:44:00+0200" "$TMP/hostile/migrations/1788577553.sh"
+touch -d "2026-09-08T20:44:00+0200" "$TMP/hostile/migrations/bad\"quote.sh"
+M2=$(WHAT_CHANGED_STATE_DIR="$TMP/hostile" "$CLI" show 20260908T184129Z --json)
+is "the good migration survives" \
+   "$(jq -r '[.groups[]|select(.id=="migrations").items[].name]|join(",")' <<<"$M2")" "1788577553"
+is "the quoted one is skipped, not fatal" \
+   "$(jq -r '.groups[]|select(.id=="migrations").summary' <<<"$M2")" "1 migration ran"
+
+echo
 echo "output cap"
 for cmd in sessions show notes status; do
   n=$("$CLI" $cmd --json 2>/dev/null | wc -c)

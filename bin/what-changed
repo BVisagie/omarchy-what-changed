@@ -13,6 +13,9 @@ readonly SCHEMA_VERSION=1
 readonly REPO="omacom/omarchy"
 readonly API_HOST="api.github.com"
 readonly MAX_ROWS=500
+# How long after its last owned transaction a session may still claim one more.
+# An update is a contiguous run; it does not own the days that follow it.
+OWN_WINDOW=${WHAT_CHANGED_OWN_WINDOW:-3600}
 readonly MAX_FETCH=524288      # cap on a single release body fetched from GitHub
 readonly MAX_STDOUT=524288     # cap on anything this CLI prints
 
@@ -76,7 +79,7 @@ parse_log() {
   [[ -e $PACMAN_LOG ]] || die "pacman log not found: $PACMAN_LOG"
   [[ -r $PACMAN_LOG ]] || die "pacman log is not readable: $PACMAN_LOG"
 
-  awk -v maxrows="$MAX_ROWS" '
+  awk -v maxrows="$MAX_ROWS" -v ownwindow="$OWN_WINDOW" '
     function jesc(s) {
       gsub(/\\/, "\\\\", s)
       gsub(/"/, "\\\"", s)
@@ -108,7 +111,13 @@ parse_log() {
       if (index(c, "pacman -Syu ") == 1 &&
           index(c, "--overwrite /usr/share/omarchy/*") > 0) return 1             # update-system-pkgs
       if (index(c, "pacman -U") == 1 && index(c, "--config /etc/pacman.conf") > 0 &&
-          (index(c, "/.cache/yay/") > 0 || index(c, "/.cache/paru/") > 0)) return 1   # yay, AUR
+          (index(c, "/.cache/yay/") > 0 || index(c, "/.cache/paru/") > 0)) {
+        # `omarchy pkg aur add` runs `yay -S --noconfirm --needed`, which
+        # reaches pacman wearing the same shape as the AUR step of an update.
+        # An update runs `yay -Sua`, upgrading what is already installed, so
+        # it never passes --needed. That flag separates the two.
+        return index(c, "--needed") == 0
+      }
       if (index(c, "pacman -D ") == 1 &&
           index(c, "--config /etc/pacman.conf") > 0) return 1                    # yay, mark explicit
       # update-orphan-pkgs runs `sudo pacman -Rns <orphans>`; `omarchy pkg
@@ -147,6 +156,7 @@ parse_log() {
       s_start_epoch = epoch_of(ts); s_last_epoch = s_start_epoch
       s_id = s_start_epoch >= 0 ? strftime("%Y%m%dT%H%M%SZ", s_start_epoch, 1) : "unknown"
       nev = 0; npri = 0; aur = 0; own = 1; tx_started = 0; tx_done = 0
+      own_until = (s_start_epoch >= 0 ? s_start_epoch + ownwindow : 0)
       delete ev; delete pri
     }
 
@@ -167,15 +177,27 @@ parse_log() {
       cmd = substr(rest, 9)
       if (length(cmd) >= 2) cmd = substr(cmd, 2, length(cmd) - 2)
       if (cmd == "pacman -Sy --noconfirm archlinux-keyring") { reset_session(ts); next }
-      own = is_update_cmd(cmd)
+
+      # Update-shaped is necessary but not sufficient. A hand-run `pacman -Rns`
+      # or a yay build days later wears the same shape as the orphan sweep and
+      # the AUR step, and only time separates them. An unparseable stamp does
+      # not close the window -- it just cannot advance it.
+      e = epoch_of(ts)
+      own = is_update_cmd(cmd) && started &&
+            (e < 0 || own_until <= 0 || e <= own_until)
       aur = (own && index(cmd, "pacman -U") == 1) ? 1 : 0
-      if (started && own) { s_last = ts; e = epoch_of(ts); if (e >= 0) s_last_epoch = e }
+      if (own) {
+        s_last = ts
+        if (e >= 0) { s_last_epoch = e; own_until = e + ownwindow }
+      }
       next
     }
 
     !started || !own { next }
 
-    { s_last = ts; e = epoch_of(ts); if (e >= 0) s_last_epoch = e }
+    { s_last = ts
+      e = epoch_of(ts)
+      if (e >= 0) { s_last_epoch = e; own_until = e + ownwindow } }
 
     cat != "ALPM" { next }
 
@@ -220,8 +242,15 @@ parse_log() {
 migrations_json() {
   local dir="$OMARCHY_STATE/migrations"
   [[ -d $dir && -r $dir ]] || { echo null; return; }
+  # The id goes straight into JSON, so anything that is not a plain migration
+  # id is skipped rather than escaped: a stray quote would break the whole
+  # document, and jq failing here would silently drop every migration.
   find "$dir" -maxdepth 1 -type f -name '*.sh' -printf '%T@\t%f\n' 2>/dev/null |
-    awk -F'\t' '{ sub(/\.sh$/, "", $2); printf "{\"epoch\":%d,\"id\":\"%s\"}\n", $1, $2 }' |
+    awk -F'\t' '{
+      sub(/\.sh$/, "", $2)
+      if ($2 ~ /^[A-Za-z0-9._-]+$/)
+        printf "{\"epoch\":%d,\"id\":\"%s\"}\n", $1, $2
+    }' |
     jq -s '.' 2>/dev/null || echo null
 }
 
@@ -236,6 +265,38 @@ installed_omarchy_version() {
   [[ -n $v ]] || v=$(pacman -Q omarchy 2>/dev/null | awk "{print \$2; exit}")
   printf "%s" "$v"
 }
+
+# How a package name is bucketed. Defined once and interpolated into both jq
+# programs below, so the two can never drift apart.
+#
+# Unanchored prefixes were grouping libraries as applications: "code" caught
+# codec2, "vim" caught vim-runtime, "mesa" put mesa-utils under Needs reboot.
+# A prefix is kept only where the suffix is genuinely part of the product
+# (brave-origin-bin, docker-compose, nvidia-utils); everything else is matched
+# exactly, allowing the -bin and -git suffixes that AUR builds carry.
+readonly JQ_CLASSES='
+  def rebootClass:
+    test("^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$")
+    or test("^linux-firmware(-|$)")
+    or test("^nvidia(-|$)")
+    or test("^(mesa|amdgpu)$");
+
+  def omarchyClass:
+    . == "omarchy" or . == "omarchy-dev"
+    or . == "omarchy-settings" or . == "omarchy-settings-dev"
+    or . == "omarchy-keyring";
+
+  def appClass:
+    test("^(brave|firefox|chromium|google-chrome|microsoft-edge|vivaldi|librewolf)(-|$)")
+    or test("^(docker|podman|containerd)(-|$)")
+    or test("^(cursor|vscodium|neovim)(-|$)")
+    or test("^(code|vim|zed|helix|emacs|nvim)(-bin|-git)?$")
+    or test("^(foot|alacritty|kitty|ghostty|wezterm)(-bin|-git)?$")
+    or test("^(hyprland|hypridle|hyprlock|hyprpaper|hyprsunset|hyprpicker|quickshell|waybar|xdg-desktop-portal-hyprland)$")
+    or test("^(obsidian|spotify|discord|signal-desktop|telegram-desktop|slack|zoom|thunderbird|1password|bitwarden)(-|$)")
+    or test("^(obs-studio|gimp|inkscape|blender|krita|vlc|mpv|steam|lutris|localsend)(-|$)")
+    or test("^(mise|git|gh|lazygit|lazydocker|tmux|fastfetch)(-bin|-git)?$");
+'
 
 # ------------------------------------------------------- session enrichment
 
@@ -260,7 +321,7 @@ enrich_sessions() {
     --argjson maxRows "$MAX_ROWS" \
     --arg channel "$channel" \
     --arg installed "$installed" \
-    --arg thisYear "$(date +%Y)" '
+    --arg thisYear "$(date +%Y)" "$JQ_CLASSES"'
 
   # "8 Sep 20:41" reads faster than an ISO stamp. The year only earns its place
   # once the session is not from this one.
@@ -275,24 +336,6 @@ enrich_sessions() {
            + $iso[11:16]
       end;
 
-  def rebootClass:
-    test("^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$")
-    or test("^linux-firmware") or test("^nvidia") or test("^(mesa|amdgpu)");
-
-  def omarchyClass:
-    . == "omarchy" or . == "omarchy-dev"
-    or . == "omarchy-settings" or . == "omarchy-settings-dev"
-    or . == "omarchy-keyring";
-
-  def appClass:
-    test("^(brave|firefox|chromium|google-chrome|microsoft-edge|vivaldi|librewolf)")
-    or test("^(docker|podman|containerd)")
-    or test("^(cursor|code|vscodium|zed|neovim|vim|emacs|helix)")
-    or test("^(foot|alacritty|kitty|ghostty|wezterm)")
-    or test("^(hyprland|hypridle|hyprlock|hyprpaper|hyprsunset|hyprpicker|quickshell|waybar|xdg-desktop-portal-hyprland)$")
-    or test("^(obsidian|spotify|discord|signal-desktop|telegram-desktop|slack|zoom|thunderbird|1password|bitwarden)")
-    or test("^(obs-studio|gimp|inkscape|blender|krita|vlc|mpv|steam|lutris|localsend)")
-    or test("^(mise|git|gh|lazygit|lazydocker|tmux|fastfetch|nvim)$");
 
   def jump($from; $to): if $from == "" or $to == "" or $from == $to then null else "\($from) → \($to)" end;
 
@@ -363,23 +406,7 @@ enrich_sessions() {
 # Precedence: Omarchy, reboot-class, named apps, AUR, everything else.
 group_session() {
   local expand="${1:-}"
-  jq --arg expand "$expand" '
-  def rebootClass:
-    test("^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$")
-    or test("^linux-firmware") or test("^nvidia") or test("^(mesa|amdgpu)");
-  def omarchyClass:
-    . == "omarchy" or . == "omarchy-dev"
-    or . == "omarchy-settings" or . == "omarchy-settings-dev"
-    or . == "omarchy-keyring";
-  def appClass:
-    test("^(brave|firefox|chromium|google-chrome|microsoft-edge|vivaldi|librewolf)")
-    or test("^(docker|podman|containerd)")
-    or test("^(cursor|code|vscodium|zed|neovim|vim|emacs|helix)")
-    or test("^(foot|alacritty|kitty|ghostty|wezterm)")
-    or test("^(hyprland|hypridle|hyprlock|hyprpaper|hyprsunset|hyprpicker|quickshell|waybar|xdg-desktop-portal-hyprland)$")
-    or test("^(obsidian|spotify|discord|signal-desktop|telegram-desktop|slack|zoom|thunderbird|1password|bitwarden)")
-    or test("^(obs-studio|gimp|inkscape|blender|krita|vlc|mpv|steam|lutris|localsend)")
-    or test("^(mise|git|gh|lazygit|lazydocker|tmux|fastfetch|nvim)$");
+  jq --arg expand "$expand" "$JQ_CLASSES"'
 
   def bucket:
     if   (.name | omarchyClass) then "omarchy"
@@ -637,8 +664,16 @@ SESSION_ARG=""
 while (( $# )); do
   case "$1" in
     --json)    JSON=1; shift ;;
-    --expand)  EXPAND=${2:-}; shift 2 ;;
-    --expand=*) EXPAND=${1#*=}; shift ;;
+    # ${2:-} would mask a missing argument and the shift 2 that followed would
+    # then fail under `set -e`, killing the script before die could say why.
+    --expand)
+      [[ -n ${2:-} && $2 != -* ]] ||
+        die "--expand requires a group name (try --expand other)"
+      EXPAND=$2; shift 2 ;;
+    --expand=*)
+      EXPAND=${1#*=}
+      [[ -n $EXPAND ]] || die "--expand requires a group name (try --expand other)"
+      shift ;;
     -h|--help) usage; exit 0 ;;
     --version) printf 'what-changed %s\n' "$(plugin_version)"; exit 0 ;;
     --)        shift ;;

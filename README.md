@@ -94,11 +94,28 @@ Nothing polls. Two events can change the answer and both are handled directly:
 - The **read marker** is watched with a `FileView`, so the icon clears the
   instant you open the overlay.
 
-Prefer it out of the bar? The plugin stays fully usable from the menu:
+### If you would rather not have the icon
 
-```bash
-omarchy plugin disable io.github.bvisagie.what-changed
+Note that `omarchy plugin disable` turns off the **whole plugin**, not just the
+bar entry — the menu item stops working too. Omarchy enables a plugin by writing
+one entry, and for a plugin that declares `bar-widget` that entry goes into
+`bar.layout`, so removing it deregisters the overlay as well.
+
+Before reaching for that: the icon is not permanent. It occupies zero width
+whenever there is nothing unread, which is nearly all of the time.
+
+If you do want the overlay without ever seeing the icon, move the plugin's entry
+in `~/.config/omarchy/shell.json` out of `bar.layout.right` and into the
+top-level `plugins` array:
+
+```jsonc
+"plugins": [
+  { "id": "io.github.bvisagie.what-changed" }
+]
 ```
+
+Then `omarchy-restart-shell`. The overlay stays summonable from the menu and the
+widget is never instantiated.
 
 The one case the shell restart does not cover is an update run over ssh or a TTY,
 where `omarchy-restart-shell` could not run. Force a re-check with:
@@ -125,7 +142,12 @@ There is deliberately no key that starts an update.
 ## The CLI
 
 The overlay only ever runs `bin/what-changed` and renders its JSON. It stands
-alone in a terminal:
+alone in a terminal — it is not on `PATH`, so alias it if you want it there:
+
+```bash
+alias what-changed=~/.config/omarchy/plugins/io.github.bvisagie.what-changed/bin/what-changed
+```
+
 
 ```console
 $ what-changed sessions
@@ -188,15 +210,33 @@ counted:
 |---|---|
 | `pacman -Sy --noconfirm archlinux-keyring` | yes — `omarchy-update-keyring` |
 | `pacman -Syu … --overwrite /usr/share/omarchy/*` | yes — `omarchy-update-system-pkgs` |
-| `pacman -U … --config /etc/pacman.conf … /.cache/yay/…` | yes — yay, tagged as AUR |
+| `pacman -U … --config /etc/pacman.conf … /.cache/yay/…`, without `--needed` | yes — yay upgrading AUR packages |
 | `pacman -Rns …` **without** `--noconfirm` | yes — `omarchy-update-orphan-pkgs` |
 | `pacman -S --noconfirm --needed …` | no — `omarchy pkg add` |
 | `pacman -Rns --noconfirm …` | no — `omarchy pkg remove` |
+| `pacman -U … --needed …` | no — `omarchy pkg aur add` |
 
-That last distinction is the whole trick: Omarchy's orphan sweep runs
+Two distinctions carry most of that. Omarchy's orphan sweep runs
 `sudo pacman -Rns "${orphans[@]}"` with no `--noconfirm`, while `omarchy pkg
-remove` always passes it. So the `gthumb` you installed an hour after the update
-does not get attributed to it.
+remove` always passes it. And the update's AUR step runs `yay -Sua`, which
+upgrades what is installed and never passes `--needed`, while `omarchy pkg aur
+add` runs `yay -S --needed` — both of which reach pacman as the same `-U` shape.
+
+### And time bounds it
+
+Shape alone is not enough, because a hand-run `sudo pacman -Rns leftover` wears
+exactly the shape of the orphan sweep. An update is a contiguous run, not a
+claim on the days that follow it, so a session only owns update-shaped commands
+that arrive within an hour of its last owned transaction — a rolling window, so
+a long AUR build extends it rather than falling outside it.
+
+The hour is deliberately generous. Too short would silently drop real update
+content: an AUR package that took forty minutes to build would vanish from the
+session and appear nowhere else. Over-including a manual install is the milder
+error, so the window errs long.
+
+Together that means the `gthumb` you install an hour after an update is not
+attributed to it — and neither is an AUR package you add two days later.
 
 ### Why not a post-update hook
 
@@ -448,6 +488,7 @@ corresponding behaviour is what breaks:
 | `pacman -Sy --noconfirm archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
 | `omarchy-restart-shell` ends every update | `bin/omarchy-update-restart` | The widget refreshing without a poller |
 | The orphan sweep omits `--noconfirm` | `bin/omarchy-update-orphan-pkgs` | Telling the sweep apart from `omarchy pkg remove` |
+| The AUR step runs `yay -Sua`, never `--needed` | `bin/omarchy-update-aur-pkgs` | Telling it apart from `omarchy pkg aur add` |
 | The post-update hook fires before AUR/mise | `bin/omarchy-update` | Why there is no hook |
 | Migration markers are touched as they run | `bin/omarchy-migrate` | Attributing migrations by mtime |
 | The menu merges a user JSONC extension | `shell/plugins/menu/Menu.qml` | The `Update › What changed` entry |
@@ -476,6 +517,7 @@ The CLI honours four environment overrides, which is what makes it testable:
 | `WHAT_CHANGED_STATE_DIR` | Omarchy's state dir (migrations, reboot marker) |
 | `WHAT_CHANGED_STATE_HOME` | This plugin's own state dir (the read marker) |
 | `WHAT_CHANGED_CACHE_DIR` | The release-note cache |
+| `WHAT_CHANGED_OWN_WINDOW` | Seconds a session may still claim a command after its last owned transaction (default 3600) |
 
 ## Local development loop
 
