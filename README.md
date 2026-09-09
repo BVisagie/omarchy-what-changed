@@ -18,7 +18,8 @@ This is the reading surface for afterwards. Two views of one update session:
 - **This machine** — the packages, migrations and reboot flags that landed here,
   grouped so a 145-package night is legible.
 - **Release notes** — the official Omarchy notes for the exact version jump that
-  session made.
+  session made, parsed into headings, bullets and paragraphs rather than left as
+  raw Markdown.
 
 ## Install
 
@@ -134,13 +135,13 @@ git or network calls from QML. The CLI stands alone in a terminal:
 
 ```console
 $ what-changed sessions
-2026-09-09 08:35  4.0.3             1↻
-2026-09-09 05:19  4.0.3             1↑ 1↻
-2026-09-08 20:41  4.0.2 → 4.0.3     135↑ 5+ 4- 1↻         reboot
+9 Sep 10:27  4.0.3             1↻
+9 Sep 05:19  4.0.3             1↑ 1↻
+8 Sep 20:41  4.0.2 → 4.0.3     135↑ 5+ 4- 1↻         reboot
 
 $ what-changed show 20260908T184129Z
-2026-09-08 20:41  ·  omarchy 4.0.2-1 → 4.0.3-1  ·  stable  ·  reboot needed
-145 package changes: 135 upgraded, 5 installed, 4 removed, 1 reinstalled
+8 Sep 20:41  ·  omarchy 4.0.2 → 4.0.3  ·  stable  ·  reboot needed
+145 packages changed  ·  5 added  ·  4 removed
 
 Omarchy
   omarchy           4.0.2-1 → 4.0.3-1
@@ -149,6 +150,9 @@ Omarchy
 Needs reboot
   linux  7.1.9.arch1-2 → 7.2.3.arch1-3
   mesa   1:26.2.1-1 → 1:26.2.2-1
+
+Migrations
+  9 migrations ran
 …
 ```
 

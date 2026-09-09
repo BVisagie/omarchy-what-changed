@@ -3,9 +3,12 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// The one line that says which update you are looking at: when it ran, the
-// Omarchy jump it made, the channel, and whether it wants a reboot. Prev/next
-// move through the recorded sessions without leaving the overlay.
+// Which update you are looking at: when it ran, the Omarchy jump it made, the
+// channel, and whether it wants a reboot.
+//
+// The parts are drawn separately rather than joined into one grey line, because
+// they are not equally important: "reboot needed" is the one thing here you may
+// have to act on, so it gets the urgent colour and everything else recedes.
 Item {
   id: root
 
@@ -15,33 +18,60 @@ Item {
   property var fallbackSession: null
   property int index: 0
   property int total: 0
+  property string olderLabel: ""
+  property string newerLabel: ""
   property color foreground: "white"
+  property color urgent: Color.urgent
   property string fontFamily: ""
 
   signal older()
   signal newer()
 
   readonly property var current: session ? session : fallbackSession
-  implicitHeight: Math.max(headline.implicitHeight + sub.implicitHeight + Style.spacing.xxs,
-                           nav.implicitHeight)
+  implicitHeight: Math.max(text.implicitHeight, nav.implicitHeight)
 
   Column {
-    anchors { left: parent.left; right: nav.left; rightMargin: Style.spacing.md }
+    id: text
+    anchors { left: parent.left; right: nav.left; rightMargin: Style.spacing.lg }
     spacing: Style.spacing.xxs
 
-    Text {
+    Row {
       id: headline
       width: parent.width
-      text: root.current ? Model.headerText(root.current) : ""
-      textFormat: Text.PlainText
-      color: root.foreground
-      elide: Text.ElideRight
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.subtitle
+      spacing: 0
+
+      Repeater {
+        model: root.current ? Model.headerParts(root.current) : []
+
+        delegate: Row {
+          id: part
+          required property var modelData
+          required property int index
+          spacing: 0
+
+          Text {
+            text: "  ·  "
+            textFormat: Text.PlainText
+            visible: part.index > 0
+            color: root.foreground
+            opacity: 0.35
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.subtitle
+          }
+
+          Text {
+            text: part.modelData.text
+            textFormat: Text.PlainText
+            color: part.modelData.kind === "urgent" ? root.urgent : root.foreground
+            opacity: part.modelData.kind === "urgent" ? 1.0 : 0.9
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.subtitle
+          }
+        }
+      }
     }
 
     Text {
-      id: sub
       width: parent.width
       text: {
         if (!root.current) return ""
@@ -52,23 +82,25 @@ Item {
       }
       textFormat: Text.PlainText
       color: root.foreground
-      opacity: root.current && root.current.incomplete ? 0.85 : 0.6
+      opacity: root.current && root.current.incomplete ? 0.85 : 0.5
       elide: Text.ElideRight
       font.family: root.fontFamily
-      font.pixelSize: Style.font.body
+      font.pixelSize: Style.font.caption
     }
   }
 
+  // Older sits left of newer, matching the way the list reads. Each arrow says
+  // which session it will take you to, so stepping is not a guess.
   Row {
     id: nav
     anchors.right: parent.right
     anchors.verticalCenter: parent.verticalCenter
-    spacing: Style.spacing.sm
+    spacing: Style.spacing.md
 
-    // Older sits left of newer, matching the way the list reads.
-    NavButton {
+    NavStep {
       glyph: "⟨"
-      hint: "older"
+      label: root.olderLabel
+      labelFirst: false
       enabled: root.index < root.total - 1
       foreground: root.foreground
       fontFamily: root.fontFamily
@@ -80,14 +112,15 @@ Item {
       text: root.total > 0 ? (root.index + 1) + " / " + root.total : ""
       textFormat: Text.PlainText
       color: root.foreground
-      opacity: 0.5
+      opacity: 0.35
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
     }
 
-    NavButton {
+    NavStep {
       glyph: "⟩"
-      hint: "newer"
+      label: root.newerLabel
+      labelFirst: true
       enabled: root.index > 0
       foreground: root.foreground
       fontFamily: root.fontFamily
@@ -95,36 +128,66 @@ Item {
     }
   }
 
-  component NavButton: Rectangle {
-    id: button
+  component NavStep: Rectangle {
+    id: step
     property string glyph: ""
-    property string hint: ""
+    property string label: ""
+    property bool labelFirst: false
     property color foreground: "white"
     property string fontFamily: ""
     signal activated()
 
-    width: Style.space(24)
+    width: row.implicitWidth + Style.spacing.sm * 2
     height: Style.space(24)
     radius: Style.cornerRadius
-    color: hover.containsMouse && enabled ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+    color: hover.containsMouse && step.enabled ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+    opacity: step.enabled ? 1.0 : 0.25
 
-    Text {
+    Row {
+      id: row
       anchors.centerIn: parent
-      text: button.glyph
-      textFormat: Text.PlainText
-      color: button.foreground
-      opacity: button.enabled ? 0.8 : 0.25
-      font.family: button.fontFamily
-      font.pixelSize: Style.font.body
+      spacing: Style.spacing.xs
+
+      Text {
+        visible: step.labelFirst && step.label !== ""
+        anchors.verticalCenter: parent.verticalCenter
+        text: step.label
+        textFormat: Text.PlainText
+        color: step.foreground
+        opacity: 0.5
+        font.family: step.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: step.glyph
+        textFormat: Text.PlainText
+        color: step.foreground
+        opacity: 0.8
+        font.family: step.fontFamily
+        font.pixelSize: Style.font.body
+      }
+
+      Text {
+        visible: !step.labelFirst && step.label !== ""
+        anchors.verticalCenter: parent.verticalCenter
+        text: step.label
+        textFormat: Text.PlainText
+        color: step.foreground
+        opacity: 0.5
+        font.family: step.fontFamily
+        font.pixelSize: Style.font.caption
+      }
     }
 
     MouseArea {
       id: hover
       anchors.fill: parent
       hoverEnabled: true
-      enabled: button.enabled
-      cursorShape: button.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-      onClicked: button.activated()
+      enabled: step.enabled
+      cursorShape: step.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: step.activated()
     }
   }
 }

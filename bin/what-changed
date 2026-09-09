@@ -259,7 +259,21 @@ enrich_sessions() {
     --argjson rebootMarker "$reboot_marker" \
     --argjson maxRows "$MAX_ROWS" \
     --arg channel "$channel" \
-    --arg installed "$installed" '
+    --arg installed "$installed" \
+    --arg thisYear "$(date +%Y)" '
+
+  # "8 Sep 20:41" reads faster than an ISO stamp. The year only earns its place
+  # once the session is not from this one.
+  def humanLabel($iso):
+    ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] as $months
+    | $iso[0:4] as $y
+    | (try ($iso[5:7] | tonumber) catch 0) as $mo
+    | (try ($iso[8:10] | tonumber) catch 0) as $d
+    | if $mo < 1 or $mo > 12 then $iso[0:16]
+      else "\($d) \($months[$mo - 1]) "
+           + (if $y == $thisYear then "" else "\($y) " end)
+           + $iso[11:16]
+      end;
 
   def rebootClass:
     test("^(linux|linux-lts|linux-zen|linux-hardened|linux-rt|linux-rt-lts)$")
@@ -310,7 +324,7 @@ enrich_sessions() {
           id: $s.id,
           startedAt: $s.startedAt,
           finishedAt: $s.finishedAt,
-          label: ($s.startedAt | .[0:10] + " " + .[11:16]),
+          label: humanLabel($s.startedAt),
           channel: $channel,
           incomplete: $s.incomplete,
           source: "pacman-log",
@@ -381,8 +395,13 @@ group_session() {
   | [ { id: "omarchy",    title: "Omarchy",      items: ($ev | map(select(.bucket == "omarchy") | row) | sort_by(.name)) },
       { id: "reboot",     title: "Needs reboot", items: ($ev | map(select(.bucket == "reboot")  | row) | sort_by(.name)) },
       { id: "apps",       title: "Apps",         items: ($ev | map(select(.bucket == "apps")    | row) | sort_by(.name)) },
+      # Migration ids are timestamps. Nine rows of them is nine rows of nothing
+      # a person can read, so the group states its size and keeps the ids for
+      # --json consumers.
       { id: "migrations", title: "Migrations",
-        items: (($s.migrations // []) | map({ kind: "migration", name: . })) },
+        items: (($s.migrations // []) | map({ kind: "migration", name: . })),
+        summary: (($s.migrations // []) | length
+                  | if . == 1 then "1 migration ran" else "\(.) migrations ran" end) },
       { id: "aur",        title: "AUR",          items: ($ev | map(select(.bucket == "aur")     | row) | sort_by(.name)) },
       ( ($ev | map(select(.bucket == "other") | row) | sort_by(.name)) as $other
         | { id: "other",
@@ -530,13 +549,16 @@ compare_url() {
 readonly JQ_HELPERS='
   def pad($n): tostring as $s | if ($n - ($s | length)) > 0
     then $s + (" " * ($n - ($s | length))) else $s end;
-  def countLine:
-    [ (if .upgraded    > 0 then "\(.upgraded) upgraded"       else empty end),
-      (if .installed   > 0 then "\(.installed) installed"     else empty end),
-      (if .removed     > 0 then "\(.removed) removed"         else empty end),
-      (if .downgraded  > 0 then "\(.downgraded) downgraded"   else empty end),
-      (if .reinstalled > 0 then "\(.reinstalled) reinstalled" else empty end) ]
-    | join(", ");
+  def stripRel: (. // "") | sub("-[0-9]+$"; "");
+  # Upgrades are the default and reinstalls are almost always the keyring, so
+  # neither earns a place in the summary. What stands out is what arrived and
+  # what left.
+  def countSummary:
+    "\(.total) package" + (if .total == 1 then "" else "s" end) + " changed"
+    + ([ (if .installed  > 0 then "\(.installed) added"       else empty end),
+         (if .removed    > 0 then "\(.removed) removed"       else empty end),
+         (if .downgraded > 0 then "\(.downgraded) downgraded" else empty end) ]
+       | if length == 0 then "" else "  \u00b7  " + join("  \u00b7  ") end);
   def versionText:
     if .kind == "migration" then ""
     elif .op == "removed" then "removed \(.from)"
@@ -545,9 +567,9 @@ readonly JQ_HELPERS='
     elif .op == "reinstalled" then "reinstalled \(.to)"
     else .to end;
   def jumpText:
-    if .omarchy.jump then "omarchy \(.omarchy.jump)"
-    elif .omarchy.to != "" then "omarchy \(.omarchy.to) (no version change)"
-    else "omarchy (version unknown)" end;
+    if .omarchy.jumped then "omarchy \(.omarchy.from | stripRel) \u2192 \(.omarchy.to | stripRel)"
+    elif .omarchy.to != "" then "omarchy \(.omarchy.to | stripRel)"
+    else "omarchy version unknown" end;
 '
 
 render_sessions_text() {
@@ -575,7 +597,7 @@ render_show_text() {
     | ([ $s.label, ($s | jumpText), $s.channel,
          (if $s.rebootRequired then "reboot needed" else empty end) ]
        | map(select(. != null and . != "")) | join("  ·  ")),
-      ($s.counts | "\(.total) package change" + (if .total == 1 then "" else "s" end) + ": \(countLine)"),
+      ($s.counts | countSummary),
       (if $s.incomplete then "\n! This session may be incomplete: a pacman transaction did not complete." else empty end),
       ( .groups[]
         | . as $g
@@ -583,7 +605,8 @@ render_show_text() {
         | (if $w > 30 then 30 else $w end) as $w
         | "",
           $g.title,
-          ( if $g.id == "other" and ($g.items | length) == 0
+          ( if $g.summary then "  " + $g.summary
+            elif $g.id == "other" and ($g.items | length) == 0
             then "  (what-changed show --expand other)"
             else ($g.items[] | "  \(.name | pad($w))  \(versionText)" | sub(" +$"; ""))
             end )

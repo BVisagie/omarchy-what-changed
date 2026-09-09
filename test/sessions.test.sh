@@ -222,7 +222,16 @@ done
 echo
 echo "human output"
 has "sessions line carries the jump" "$("$CLI" sessions)" "4.0.2 → 4.0.3"
-has "show header carries the jump"   "$("$CLI" show 20260908T184129Z)" "omarchy 4.0.2-1 → 4.0.3-1"
+has "show header carries the jump"   "$("$CLI" show 20260908T184129Z)" "omarchy 4.0.2 → 4.0.3"
+has "the pkgrel is stripped from the header" "$("$CLI" show 20260908T184129Z | head -1)" "4.0.2 → 4.0.3"
+is  "labels read as dates, not stamps" \
+    "$("$CLI" sessions --json | jq -r '.sessions[1].label')" "8 Sep 20:41"
+has "counts lead with the total"     "$("$CLI" show 20260908T184129Z)" "packages changed"
+has "and name what arrived and left" "$("$CLI" show 20260908T184129Z)" "removed"
+is  "migrations collapse to a count, not a wall of ids" \
+    "$("$CLI" show 20260908T184129Z --json | jq -r '.groups[]|select(.id=="migrations").summary')" \
+    "2 migrations ran"
+has "and the text view shows that summary" "$("$CLI" show 20260908T184129Z)" "2 migrations ran"
 has "show header flags the reboot"   "$("$CLI" show 20260908T184129Z)" "reboot needed"
 is  "no trailing whitespace in human output" \
     "$("$CLI" show 20260908T184129Z | grep -c ' $')" 0

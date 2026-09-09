@@ -397,6 +397,10 @@ Item {
             fallbackSession: root.currentSession
             index: root.sessionIndex
             total: root.sessions.length
+            olderLabel: root.sessionIndex + 1 < root.sessions.length
+              ? root.sessions[root.sessionIndex + 1].label : ""
+            newerLabel: root.sessionIndex > 0
+              ? root.sessions[root.sessionIndex - 1].label : ""
             foreground: root.foreground
             fontFamily: root.fontFamily
             onOlder: root.step(1)

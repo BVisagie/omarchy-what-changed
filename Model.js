@@ -132,6 +132,7 @@ function intakeGroup(raw) {
     title: text(raw.title, MAX_TITLE),
     collapsed: raw.collapsed === true,
     count: declared,
+    summary: text(raw.summary, MAX_TITLE),
     items: items
   }
 }
@@ -203,7 +204,8 @@ function parseNotes(jsonText) {
         tag: text(r.tag, MAX_SHORT),
         name: text(r.name, MAX_TITLE),
         url: safeUrl(r.url),
-        body: multiline(r.body, MAX_BODY)
+        body: multiline(r.body, MAX_BODY),
+        blocks: parseBlocks(r.body)
       })
     }
   return {
@@ -212,6 +214,81 @@ function parseNotes(jsonText) {
     releases: releases,
     message: text(raw.message, MAX_MESSAGE)
   }
+}
+
+
+// ------------------------------------------------------- release-note blocks
+//
+// Release bodies are Markdown. Rendering them raw leaves "## Heading" and
+// "[text](https://long.url/)" mid-sentence, which is what the notes view used
+// to do and it read badly. Parsing to a block list is structure, not rich text:
+// every block below still reaches a Text.PlainText element, so nothing about
+// the untrusted-input handling changes.
+
+var MAX_BLOCKS = 400
+
+// Inline markers carry no meaning once there is no rich text to apply them to.
+// A link keeps its label and loses its URL, because the label is the sentence.
+function inlineText(value) {
+  var out = String(value)
+  out = out.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+  out = out.replace(/\[([^\]]*)\]\(([^)]*)\)/g, function (m, label, url) {
+    return label && label.length ? label : url
+  })
+  out = out.replace(/\*\*([^*]+)\*\*/g, "$1")
+  out = out.replace(/__([^_]+)__/g, "$1")
+  out = out.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1$2")
+  out = out.replace(/(^|[\s(])_([^_\n]+)_/g, "$1$2")
+  out = out.replace(/`([^`]+)`/g, "$1")
+  return out.replace(/\s+/g, " ").replace(/^ +| +$/g, "")
+}
+
+function parseBlocks(body) {
+  var lines = multiline(body, MAX_BODY).split("\n")
+  var blocks = []
+  var paragraph = []
+  var fenced = false
+
+  function flush() {
+    if (!paragraph.length) return
+    var kept = []
+    for (var j = 0; j < paragraph.length; j++) {
+      var cleaned = inlineText(paragraph[j])
+      if (cleaned) kept.push(cleaned)
+    }
+    // Joined with newlines, not spaces: GitHub renders a single newline in a
+    // release body as a hard break, so "Download: ..." and "SHA256: ..." are
+    // two lines to their author and must stay two lines here.
+    if (kept.length) blocks.push({ type: "p", text: kept.join("\n") })
+    paragraph = []
+  }
+
+  for (var i = 0; i < lines.length && blocks.length < MAX_BLOCKS; i++) {
+    var line = String(lines[i]).replace(/\s+$/, "")
+
+    if (/^\s*```/.test(line)) { flush(); fenced = !fenced; continue }
+    if (fenced) { blocks.push({ type: "code", text: line }); continue }
+    if (line === "") { flush(); continue }
+    if (/^\s*([-*_])\s*\1\s*\1[-*_\s]*$/.test(line)) { flush(); blocks.push({ type: "rule", text: "" }); continue }
+
+    var heading = /^(#{1,6})\s+(.*)$/.exec(line)
+    if (heading) {
+      flush()
+      var depth = heading[1].length > 2 ? 3 : heading[1].length
+      blocks.push({ type: "h" + depth, text: inlineText(heading[2]) })
+      continue
+    }
+
+    var bullet = /^\s*[-*+]\s+(.*)$/.exec(line) || /^\s*\d+[.)]\s+(.*)$/.exec(line)
+    if (bullet) { flush(); blocks.push({ type: "li", text: inlineText(bullet[1]) }); continue }
+
+    var quote = /^\s*>\s?(.*)$/.exec(line)
+    if (quote) { flush(); blocks.push({ type: "quote", text: inlineText(quote[1]) }); continue }
+
+    paragraph.push(line)
+  }
+  flush()
+  return blocks
 }
 
 // Only an https link into a GitHub repo is ever handed to a browser.
@@ -231,33 +308,52 @@ function versionText(item) {
   return item.to
 }
 
+// The pkgrel is packaging detail, not a version the reader thinks in.
+function stripRelease(value) {
+  return String(value || "").replace(/-[0-9]+$/, "")
+}
+
 function jumpText(session) {
   if (!session) return ""
   var om = session.omarchy
-  if (om.jumped && om.from && om.to) return "omarchy " + om.from + " → " + om.to
-  if (om.to) return "omarchy " + om.to
+  if (om.jumped && om.from && om.to)
+    return "omarchy " + stripRelease(om.from) + " → " + stripRelease(om.to)
+  if (om.to) return "omarchy " + stripRelease(om.to)
   return "omarchy version unknown"
 }
 
+// Upgrades are the default and reinstalls are almost always the keyring, so
+// neither earns a place here. What stands out is what arrived and what left.
 function countsText(counts) {
   if (!counts) return ""
+  if (!counts.total) return "No package changes"
+  var line = counts.total + (counts.total === 1 ? " package changed" : " packages changed")
   var parts = []
-  if (counts.upgraded)    parts.push(counts.upgraded + " upgraded")
-  if (counts.installed)   parts.push(counts.installed + " installed")
-  if (counts.removed)     parts.push(counts.removed + " removed")
-  if (counts.downgraded)  parts.push(counts.downgraded + " downgraded")
-  if (counts.reinstalled) parts.push(counts.reinstalled + " reinstalled")
-  if (parts.length === 0) return "No package changes"
-  var noun = counts.total === 1 ? " package change: " : " package changes: "
-  return counts.total + noun + parts.join(", ")
+  if (counts.installed)  parts.push(counts.installed + " added")
+  if (counts.removed)    parts.push(counts.removed + " removed")
+  if (counts.downgraded) parts.push(counts.downgraded + " downgraded")
+  return parts.length ? line + "  \u00b7  " + parts.join("  \u00b7  ") : line
+}
+
+// The header is not one string: "reboot needed" is the most actionable thing on
+// the screen and the view colours it, so the parts are handed over separately
+// rather than pre-joined into a single grey line.
+function headerParts(session) {
+  if (!session) return []
+  var parts = [{ text: session.label, kind: "plain" },
+               { text: jumpText(session), kind: "plain" }]
+  if (session.channel && session.channel !== "unknown")
+    parts.push({ text: session.channel, kind: "plain" })
+  if (session.rebootRequired)
+    parts.push({ text: "reboot needed", kind: "urgent" })
+  return parts
 }
 
 function headerText(session) {
-  if (!session) return ""
-  var parts = [session.label, jumpText(session)]
-  if (session.channel && session.channel !== "unknown") parts.push(session.channel)
-  if (session.rebootRequired) parts.push("reboot needed")
-  return parts.join("  ·  ")
+  var out = []
+  var parts = headerParts(session)
+  for (var i = 0; i < parts.length; i++) out.push(parts[i].text)
+  return out.join("  \u00b7  ")
 }
 
 function sessionSummary(session) {
@@ -287,6 +383,7 @@ if (typeof module !== "undefined" && module.exports)
     parseSessions: parseSessions, parseShow: parseShow, parseNotes: parseNotes,
     parseStatus: parseStatus,
     versionText: versionText, jumpText: jumpText, countsText: countsText,
-    headerText: headerText, sessionSummary: sessionSummary,
+    headerText: headerText, headerParts: headerParts,
+    sessionSummary: sessionSummary, parseBlocks: parseBlocks, inlineText: inlineText,
     sessionVersion: sessionVersion
   }

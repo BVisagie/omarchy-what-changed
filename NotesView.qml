@@ -5,10 +5,14 @@ import "Model.js" as Model
 
 // The official release notes for the version jump this session made.
 //
-// Bodies are rendered as plain text, never as rich HTML or markdown: they are
-// authored upstream and arrive over the network, so they get the same treatment
-// as any other untrusted string. In this release no per-bullet status is
-// claimed — an honest wall of notes beats a wrong checkmark.
+// Bodies are Markdown authored upstream and fetched over the network, so they
+// are untrusted: every block below is Text.PlainText and nothing is ever handed
+// to a rich-text renderer. Parsing to headings, bullets and paragraphs is
+// structure, not rich text -- it is what stops "## Heading" and
+// "[label](https://long.url)" from landing in the middle of a sentence.
+//
+// In this release no per-bullet status is claimed: an honest wall of notes
+// beats a wrong checkmark.
 Column {
   id: root
 
@@ -76,39 +80,93 @@ Column {
     model: (root.notes && root.notes.ok) ? root.notes.releases : []
 
     delegate: Column {
+      id: release
       required property var modelData
       width: root.width
       spacing: Style.spacing.sm
 
       Text {
-        text: modelData.name || modelData.tag
+        text: release.modelData.name || release.modelData.tag
         textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: Style.font.heading
+        font.pixelSize: Style.font.display
       }
 
       Text {
         width: parent.width
-        visible: modelData.url !== ""
-        text: modelData.url
+        visible: release.modelData.url !== ""
+        text: release.modelData.url
         textFormat: Text.PlainText
         color: root.foreground
-        opacity: 0.45
+        opacity: 0.4
         elide: Text.ElideRight
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
       }
 
-      Text {
-        width: parent.width
-        text: modelData.body
-        textFormat: Text.PlainText
-        color: root.foreground
-        opacity: 0.85
-        wrapMode: Text.WordWrap
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
+      Repeater {
+        model: release.modelData.blocks
+
+        delegate: Item {
+          id: block
+          required property var modelData
+          width: release.width
+          implicitHeight: line.implicitHeight + block.spaceAbove
+          height: implicitHeight
+
+          // Headings need air above them; runs of bullets should not drift
+          // apart. The spacing is the structure doing its job.
+          readonly property int spaceAbove: {
+            var t = block.modelData.type
+            if (t === "h1" || t === "h2") return Style.spacing.lg
+            if (t === "h3") return Style.spacing.md
+            if (t === "rule") return Style.spacing.md
+            return Style.spacing.xxs
+          }
+
+          Text {
+            id: line
+            y: block.spaceAbove
+            x: block.modelData.type === "li" ? Style.spacing.md : 0
+            width: parent.width - x
+            visible: block.modelData.type !== "rule"
+            text: block.modelData.type === "li"
+              ? "•   " + block.modelData.text
+              : block.modelData.text
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: {
+              var t = block.modelData.type
+              if (t === "h1" || t === "h2") return Style.font.heading
+              if (t === "h3") return Style.font.subtitle
+              if (t === "code") return Style.font.bodySmall
+              return Style.font.body
+            }
+            opacity: {
+              var t = block.modelData.type
+              if (t === "h1" || t === "h2" || t === "h3") return 1.0
+              if (t === "code" || t === "quote") return 0.65
+              return 0.85
+            }
+            font.weight: {
+              var t = block.modelData.type
+              return (t === "h1" || t === "h2" || t === "h3")
+                ? Font.DemiBold : Font.Normal
+            }
+          }
+
+          Rectangle {
+            visible: block.modelData.type === "rule"
+            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
+            height: 1
+            color: root.foreground
+            opacity: 0.15
+          }
+        }
       }
     }
   }

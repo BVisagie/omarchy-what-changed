@@ -68,8 +68,22 @@ Column {
         font.letterSpacing: 0.6
       }
 
+      // A group that carries a summary says its size in one line. Migration
+      // ids are timestamps: nine rows of them is nine rows of nothing a person
+      // can read.
+      Text {
+        visible: group.modelData.summary !== ""
+        width: group.width
+        text: group.modelData.summary
+        textFormat: Text.PlainText
+        color: root.foreground
+        opacity: 0.8
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+
       Repeater {
-        model: group.modelData.items
+        model: group.modelData.summary === "" ? group.modelData.items : []
 
         delegate: Item {
           required property var modelData
