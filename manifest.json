@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "BVisagie",
   "license": "MIT",
-  "description": "What actually landed on this machine? What is new in Omarchy? Two questions after every update, answered for the jump you took. Not a pending-update indicator. Not a news feed.",
+  "description": "What actually landed on this machine? What is new in Omarchy? Answered after every Omarchy update.",
   "kinds": [
     "overlay",
     "bar-widget"

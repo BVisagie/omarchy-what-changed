@@ -2,8 +2,7 @@
 
 **What actually landed on this machine? What is new in Omarchy?**
 
-Two questions after every Omarchy update, answered for the version jump you
-actually took. Not a pending-update indicator. Not a news feed.
+Answered after every Omarchy update.
 
 ![What Changed, showing the packages that landed in one update](preview.png)
 
