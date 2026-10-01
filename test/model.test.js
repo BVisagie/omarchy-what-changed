@@ -64,11 +64,11 @@ console.log('intake drops what it does not know')
   is('unknown item field dropped', r.groups[0].items[0].evilField, undefined)
   is('session keys are exactly the known set',
     Object.keys(r.session).sort(),
-    ['channel', 'counts', 'id', 'incomplete', 'label', 'omarchy',
-     'rebootReason', 'rebootRequired', 'source'])
+    ['channel', 'counts', 'id', 'incomplete', 'label', 'nearbyCounts', 'omarchy',
+     'rebootReason', 'rebootRequired', 'rebootStatus', 'source'])
   is('item keys are exactly the known set',
     Object.keys(r.groups[0].items[0]).sort(),
-    ['aur', 'from', 'kind', 'name', 'op', 'to'])
+    ['attribution', 'aur', 'from', 'kind', 'name', 'op', 'to'])
   is('counts keys are exactly the known set',
     Object.keys(r.session.counts).sort(),
     ['aur', 'downgraded', 'installed', 'omitted', 'reinstalled',
@@ -276,7 +276,7 @@ console.log('formatting')
 {
   const s = M.parseShow(JSON.stringify(SHOW)).session
   is('header reads as one line',
-    M.headerText(s), '2026-09-08 20:41  ·  omarchy 4.0.2 → 4.0.3  ·  stable  ·  reboot needed')
+    M.headerText(s), '2026-09-08 20:41  ·  omarchy 4.0.2 → 4.0.3  ·  current channel: stable  ·  reboot needed')
   is('the pkgrel is stripped', M.jumpText(s), 'omarchy 4.0.2 → 4.0.3')
   is('counts lead with the total and name arrivals and departures',
     M.countsText(s.counts), '145 packages changed  ·  5 added  ·  4 removed')
@@ -295,6 +295,45 @@ console.log('formatting')
   is('migration row has no version', M.versionText({ kind: 'migration', name: '1' }), '')
 }
 
+console.log('')
+console.log('accuracy intake and historical presentation')
+{
+  const raw = JSON.parse(JSON.stringify(SHOW))
+  raw.currentRebootRequest = 'pending'
+  raw.session.rebootStatus = 'rebooted'
+  raw.session.nearbyCounts = {total: 7, installed: 7, omitted: 2}
+  raw.groups[0].items[0].attribution = 'migration-inferred'
+  raw.groups[0].explanation = 'Concurrent manual commands cannot be ruled out.'
+  raw.groups[0].omitted = 3
+  const r = M.parseShow(JSON.stringify(raw))
+  is('reboot status survives intake', r.session.rebootStatus, 'rebooted')
+  is('historical status suppresses a conflicting urgent flag', r.session.rebootRequired, false)
+  is('current reboot request survives overlay intake', r.currentRebootRequest, 'pending')
+  is('nearby counts survive separately', r.session.nearbyCounts.total, 7)
+  is('nearby omissions survive separately', r.session.nearbyCounts.omitted, 2)
+  is('inferred attribution survives', r.groups[0].items[0].attribution, 'migration-inferred')
+  is('group explanation survives', r.groups[0].explanation, 'Concurrent manual commands cannot be ruled out.')
+  is('group omissions survive', r.groups[0].omitted, 3)
+  truthy('rebooted header is historical', M.headerText(r.session).includes('reboot followed these changes'))
+  is('rebooted header is never urgent', M.headerParts(r.session).some(p => p.kind === 'urgent'), false)
+  raw.session.rebootStatus = 'unknown'
+  const unknown = M.parseShow(JSON.stringify(raw)).session
+  truthy('unknown boot timing is qualified', M.headerText(unknown).includes('reboot status unknown'))
+  is('unknown reboot timing is not urgent', M.headerParts(unknown).some(p => p.kind === 'urgent'), false)
+  raw.session.rebootStatus = 'malicious'
+  raw.currentRebootRequest = 'malicious'
+  raw.groups[0].items[0].attribution = 'malicious'
+  const invalid = M.parseShow(JSON.stringify(raw))
+  is('invalid reboot status becomes unknown', invalid.session.rebootStatus, 'unknown')
+  is('invalid reboot request becomes unknown', invalid.currentRebootRequest, 'unknown')
+  is('unknown attribution is discarded', invalid.groups[0].items[0].attribution, '')
+  const status = M.parseStatus(JSON.stringify({unread: false, newest: raw.session, currentRebootRequest: 'pending'}))
+  is('system reboot marker never changes unread', status.unread, false)
+  is('system reboot request is not part of bar intake', status.currentRebootRequest, undefined)
+  is('missing reboot request stays absent for older schema-1 payloads', M.parseShow(JSON.stringify(SHOW)).currentRebootRequest, 'absent')
+  is('empty-history status intake keeps request for the overlay', M.parseRebootRequest('{"currentRebootRequest":"pending","newest":null}'), 'pending')
+  is('list intake keeps current request', M.parseSessions(JSON.stringify({sessions: [raw.session], currentRebootRequest: 'pending'})).currentRebootRequest, 'pending')
+}
 console.log('')
 console.log(pass + ' passed, ' + fail + ' failed')
 process.exit(fail === 0 ? 0 : 1)

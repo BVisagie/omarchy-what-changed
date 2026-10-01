@@ -1,0 +1,16 @@
+# Minimized real 4.0.4 update; marker 1789325478.sh completed at 07:57:41+0200.
+[2026-09-16T07:57:19+0200] [PACMAN] Running 'pacman -Sy --noconfirm archlinux-keyring'
+[2026-09-16T07:57:19+0200] [ALPM] transaction started
+[2026-09-16T07:57:19+0200] [ALPM] reinstalled archlinux-keyring (20260902-1)
+[2026-09-16T07:57:20+0200] [ALPM] transaction completed
+[2026-09-16T07:57:20+0200] [PACMAN] Running 'pacman -Syu --noconfirm --overwrite /usr/share/omarchy/*'
+[2026-09-16T07:57:22+0200] [ALPM] transaction started
+[2026-09-16T07:57:22+0200] [ALPM] upgraded omarchy-settings (4.0.3-1 -> 4.0.4-1)
+[2026-09-16T07:57:22+0200] [ALPM] upgraded omarchy (4.0.3-1 -> 4.0.4-1)
+[2026-09-16T07:57:22+0200] [ALPM] transaction completed
+[2026-09-16T07:57:23+0200] [PACMAN] Running 'pacman -S --noconfirm --needed linux-omarchy linux-omarchy-headers'
+[2026-09-16T07:57:27+0200] [ALPM] transaction started
+[2026-09-16T07:57:27+0200] [ALPM] installed linux-omarchy (7.2.5-3)
+[2026-09-16T07:57:27+0200] [ALPM] installed pahole (1:1.31-2)
+[2026-09-16T07:57:28+0200] [ALPM] installed linux-omarchy-headers (7.2.5-3)
+[2026-09-16T07:57:28+0200] [ALPM] transaction completed

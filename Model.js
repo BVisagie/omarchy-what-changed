@@ -83,6 +83,19 @@ function intakeCounts(raw) {
   }
 }
 
+function enumValue(value, allowed, fallback) {
+  return allowed.indexOf(value) >= 0 ? value : fallback
+}
+
+function rebootRequest(raw) {
+  return enumValue(raw, ["pending", "stale", "unknown", "absent"], raw === undefined ? "absent" : "unknown")
+}
+
+function parseRebootRequest(jsonText) {
+  var raw = parse(jsonText)
+  return raw ? rebootRequest(raw.currentRebootRequest) : "unknown"
+}
+
 function intakeSession(raw) {
   if (!raw || typeof raw !== "object") return null
   var id = text(raw.id, MAX_SHORT)
@@ -98,7 +111,9 @@ function intakeSession(raw) {
     channel: text(raw.channel, MAX_SHORT),
     source: text(raw.source, MAX_SHORT),
     incomplete: raw.incomplete === true,
-    rebootRequired: raw.rebootRequired === true,
+    rebootRequired: raw.rebootRequired === true && (raw.rebootStatus === undefined || raw.rebootStatus === "pending"),
+    rebootStatus: enumValue(raw.rebootStatus, ["pending", "rebooted", "unknown", "not-indicated"],
+                           raw.rebootStatus === undefined && raw.rebootRequired === true ? "pending" : "unknown"),
     rebootReason: reason,
     omarchy: {
       name: text(om["package"], MAX_NAME),
@@ -106,7 +121,8 @@ function intakeSession(raw) {
       to: text(om.to, MAX_VERSION),
       jumped: om.jumped === true
     },
-    counts: intakeCounts(raw.counts)
+    counts: intakeCounts(raw.counts),
+    nearbyCounts: intakeCounts(raw.nearbyCounts)
   }
 }
 
@@ -121,6 +137,8 @@ function intakeItem(raw) {
     name: name,
     from: isMigration ? "" : text(raw.from, MAX_VERSION),
     to: isMigration ? "" : text(raw.to, MAX_VERSION),
+    attribution: isMigration ? "" : enumValue(raw.attribution,
+      ["update-command", "migration-inferred", "nearby-uncertain"], ""),
     aur: raw.aur === true
   }
 }
@@ -144,6 +162,8 @@ function intakeGroup(raw) {
     collapsed: raw.collapsed === true,
     count: declared,
     summary: text(raw.summary, MAX_TITLE),
+    explanation: text(raw.explanation, MAX_MESSAGE),
+    omitted: count(raw.omitted),
     items: items
   }
 }
@@ -168,7 +188,7 @@ function parseSessions(jsonText) {
   }
   if (out.length === 0)
     return { ok: false, sessions: [], error: "No update sessions found." }
-  return { ok: true, sessions: out, error: "" }
+  return { ok: true, sessions: out, error: "", currentRebootRequest: rebootRequest(raw.currentRebootRequest) }
 }
 
 function parseShow(jsonText) {
@@ -184,6 +204,7 @@ function parseShow(jsonText) {
     }
   return {
     ok: true, session: session, groups: groups, error: "",
+    currentRebootRequest: rebootRequest(raw.currentRebootRequest),
     outputTruncated: raw.outputTruncated === true
   }
 }
@@ -354,9 +375,13 @@ function headerParts(session) {
   var parts = [{ text: session.label, kind: "plain" },
                { text: jumpText(session), kind: "plain" }]
   if (session.channel && session.channel !== "unknown")
-    parts.push({ text: session.channel, kind: "plain" })
-  if (session.rebootRequired)
+    parts.push({ text: "current channel: " + session.channel, kind: "plain" })
+  if (session.rebootStatus === "pending" || (session.rebootStatus === undefined && session.rebootRequired))
     parts.push({ text: "reboot needed", kind: "urgent" })
+  else if (session.rebootStatus === "rebooted")
+    parts.push({ text: "reboot followed these changes", kind: "plain" })
+  else if (session.rebootStatus === "unknown" && session.rebootReason && session.rebootReason.length)
+    parts.push({ text: "reboot-related changes; reboot status unknown", kind: "plain" })
   return parts
 }
 
@@ -392,7 +417,7 @@ if (typeof module !== "undefined" && module.exports)
     text: text, multiline: multiline, safeUrl: safeUrl, sentence: sentence,
     intakeSession: intakeSession, intakeItem: intakeItem, intakeGroup: intakeGroup,
     parseSessions: parseSessions, parseShow: parseShow, parseNotes: parseNotes,
-    parseStatus: parseStatus,
+    parseStatus: parseStatus, parseRebootRequest: parseRebootRequest,
     versionText: versionText, jumpText: jumpText, countsText: countsText,
     headerText: headerText, headerParts: headerParts,
     sessionSummary: sessionSummary, parseBlocks: parseBlocks, inlineText: inlineText,
