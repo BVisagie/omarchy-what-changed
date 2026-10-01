@@ -257,9 +257,7 @@ The version known at the start of each session comes from all earlier recorded
 `omarchy`/`omarchy-dev` package events, including installer transactions, manual
 changes and channel switches outside update windows. Later uncertain or manual
 changes can seed the next session without rewriting an earlier session’s jump
-or claiming that those packages came from the update. This follows the
-[implementation review](https://github.com/BVisagie/omarchy-what-changed/pull/2#pullrequestreview-5382511305),
-which refines the plan’s original restriction on version carry-forward.
+or claiming that those packages came from the update.
 
 Package summaries and version transitions use all primary events before the
 500-row display budget. Omarchy and reboot-related facts are retained beyond
