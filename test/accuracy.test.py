@@ -169,6 +169,39 @@ class Accuracy(unittest.TestCase):
         self.assertEqual(failed['session']['counts']['total'], 2)
         self.assertEqual(failed['session']['rebootReason'], [])
 
+    def test_noop_system_step_uses_last_activity_with_completed_marker(self):
+        no_op = transaction(0, KEYRING, ['reinstalled archlinux-keyring (1)']) + command(2, SYSTEM)
+        no_op += f'[{stamp(3)}] [PACMAN] starting full system upgrade\n'
+        self.log.write_text(no_op + transaction(3, 'pacman -S linux-omarchy', ['installed linux-omarchy (7)'], end=4))
+        self.marker(4)
+        out = self.show()
+        self.assertEqual(out['session']['counts']['total'], 2)
+        self.assertEqual(out['session']['nearbyCounts']['total'], 0)
+        self.assertEqual(out['session']['rebootStatus'], 'pending')
+        self.assertEqual(out['session']['rebootReason'], ['linux-omarchy'])
+        self.assertEqual(out['session']['finishedAt'], stamp(3))
+        self.assertFalse(out['session']['incomplete'])
+        kernel = next(r for r in rows(out) if r['name'] == 'linux-omarchy')
+        self.assertEqual(kernel['attribution'], 'migration-inferred')
+
+    def test_noop_system_step_without_marker_remains_uncertain(self):
+        self.log.write_text(transaction(0, KEYRING, ['reinstalled archlinux-keyring (1)']) + command(2, SYSTEM)
+                            + transaction(4, 'pacman -S linux-omarchy', ['installed linux-omarchy (7)']))
+        out = self.show()
+        self.assertEqual(out['session']['counts']['total'], 1)
+        self.assertEqual(out['session']['nearbyCounts']['total'], 1)
+        self.assertFalse(out['session']['rebootRequired'])
+        self.assertEqual(out['session']['rebootReason'], [])
+
+    def test_unfinished_final_system_step_cannot_use_noop_fallback(self):
+        self.log.write_text(update() + transaction(6, SYSTEM, ['upgraded zlib (1 -> 2)'], complete=False)
+                            + transaction(8, 'pacman -S linux-omarchy', ['installed linux-omarchy (7)']))
+        self.marker(10)
+        out = self.show()
+        self.assertTrue(out['session']['incomplete'])
+        self.assertEqual(out['session']['nearbyCounts']['total'], 1)
+        self.assertEqual(out['session']['rebootReason'], [])
+
     def test_final_system_upgrade_sets_bracket(self):
         self.log.write_text(update() + transaction(4, 'pacman -S early', ['installed early (1)'])
                             + transaction(6, SYSTEM, ['upgraded omarchy (4.0.4-1 -> 4.0.5-1)'])
@@ -250,6 +283,65 @@ class Accuracy(unittest.TestCase):
         self.assertEqual(sessions[1]['omarchy']['to'], '')
         self.assertFalse(sessions[1]['omarchy']['jumped'])
 
+    def test_installer_history_seeds_first_updates_without_creating_a_jump(self):
+        self.log.write_text(transaction(-20, 'pacman -S omarchy', ['installed omarchy (4.0.1-1)'])
+                            + update(['upgraded zlib (1 -> 2)'])
+                            + transaction(30, KEYRING, ['reinstalled archlinux-keyring (1)']))
+        sessions = self.cli('sessions')['sessions']
+        self.assertEqual(len(sessions), 2)
+        for session in sessions:
+            self.assertEqual(session['omarchy']['package'], 'omarchy')
+            self.assertEqual(session['omarchy']['from'], '4.0.1-1')
+            self.assertEqual(session['omarchy']['to'], '4.0.1-1')
+            self.assertFalse(session['omarchy']['jumped'])
+        self.assertEqual(sessions[1]['counts']['total'], 2)
+        self.assertEqual(self.cli('status')['newest']['omarchy']['to'], '4.0.1-1')
+        self.assertEqual(self.cli('notes')['status'], 'no-jump')
+        self.assertIn('omarchy 4.0.1', self.cli('show', json_output=False).splitlines()[0])
+        self.assertNotIn('installed omarchy', self.cli('show', '--expand', 'other', json_output=False))
+
+    def test_channel_switch_outside_window_seeds_next_session(self):
+        for source, dest in [('omarchy', 'omarchy-dev'), ('omarchy-dev', 'omarchy')]:
+            with self.subTest(source=source):
+                self.log.write_text(update([f'upgraded {source} (4.0.3-1 -> 4.0.4-1)'])
+                                    + transaction(5000, f'pacman -S --needed --noconfirm --ask 4 {dest}',
+                                                  [f'removed {source} (4.0.4-1)', f'installed {dest} (4.0.5-1)'])
+                                    + transaction(6000, KEYRING, ['reinstalled archlinux-keyring (1)'])
+                                    + transaction(6002, SYSTEM, ['upgraded zlib (1 -> 2)']))
+                sessions = self.cli('sessions')['sessions']
+                self.assertEqual(sessions[0]['omarchy']['package'], dest)
+                self.assertEqual(sessions[0]['omarchy']['from'], '4.0.5-1')
+                self.assertEqual(sessions[0]['omarchy']['to'], '4.0.5-1')
+                self.assertFalse(sessions[0]['omarchy']['jumped'])
+                self.assertEqual(sessions[0]['counts']['total'], 2)
+                self.assertEqual(sessions[0]['nearbyCounts']['total'], 0)
+                self.assertEqual(sessions[1]['omarchy']['to'], '4.0.4-1')
+                self.assertTrue(sessions[1]['omarchy']['jumped'])
+                self.assertEqual(sessions[1]['counts']['total'], 2)
+                self.assertEqual(sessions[1]['nearbyCounts']['total'], 0)
+                self.assertEqual(self.cli('notes')['status'], 'no-jump')
+
+    def test_manual_removal_seeds_unknown_and_does_not_rewrite_history(self):
+        self.log.write_text(update() + transaction(5000, 'pacman -Rns --noconfirm omarchy', ['removed omarchy (4.0.4-1)'])
+                            + transaction(6000, KEYRING, []) + transaction(6002, SYSTEM, ['upgraded zlib (1 -> 2)']))
+        sessions = self.cli('sessions')['sessions']
+        self.assertEqual(sessions[0]['omarchy']['from'], '')
+        self.assertEqual(sessions[0]['omarchy']['to'], '')
+        self.assertFalse(sessions[0]['omarchy']['jumped'])
+        self.assertEqual(sessions[1]['omarchy']['to'], '4.0.4-1')
+        self.assertTrue(sessions[1]['omarchy']['jumped'])
+
+    def test_installer_removal_and_inactive_package_removal(self):
+        self.log.write_text(transaction(-20, 'pacman -S omarchy', ['installed omarchy (4.0.1-1)'])
+                            + transaction(-10, 'pacman -R omarchy', ['removed omarchy (4.0.1-1)'])
+                            + update(['upgraded zlib (1 -> 2)']))
+        self.assertEqual(self.show()['session']['omarchy']['to'], '')
+        self.log.write_text(transaction(-20, 'pacman -S omarchy-dev', ['installed omarchy-dev (4.0.2-1)'])
+                            + transaction(-10, 'pacman -R omarchy', ['removed omarchy (4.0.1-1)'])
+                            + update(['upgraded zlib (1 -> 2)']))
+        self.assertEqual(self.show()['session']['omarchy']['package'], 'omarchy-dev')
+        self.assertEqual(self.show()['session']['omarchy']['to'], '4.0.2-1')
+
     def test_unknown_initial_history_is_never_todays_installed_version(self):
         self.log.write_text(update(['upgraded zlib (1 -> 2)']))
         self.assertEqual(self.show()['session']['omarchy']['to'], '')
@@ -265,12 +357,18 @@ class Accuracy(unittest.TestCase):
                 result = subprocess.run([str(CLI), 'compare-url'], env=self.env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
 
-    def test_uncertain_omarchy_does_not_change_carry_forward(self):
+    def test_uncertain_omarchy_seeds_future_session_without_changing_its_own_jump(self):
         self.log.write_text(update() + transaction(4, 'pacman -S omarchy-dev', ['removed omarchy (4.0.4-1)', 'installed omarchy-dev (4.0.5-1)'])
                             + transaction(30, KEYRING, []))
         sessions = self.cli('sessions')['sessions']
-        self.assertEqual(sessions[0]['omarchy']['to'], '4.0.4-1')
+        self.assertEqual(sessions[0]['omarchy']['package'], 'omarchy-dev')
+        self.assertEqual(sessions[0]['omarchy']['from'], '4.0.5-1')
+        self.assertEqual(sessions[0]['omarchy']['to'], '4.0.5-1')
+        self.assertFalse(sessions[0]['omarchy']['jumped'])
+        self.assertEqual(sessions[0]['counts']['total'], 0)
+        self.assertEqual(sessions[1]['omarchy']['from'], '4.0.3-1')
         self.assertEqual(sessions[1]['omarchy']['to'], '4.0.4-1')
+        self.assertEqual(sessions[1]['counts']['total'], 2)
         self.assertEqual(sessions[1]['nearbyCounts']['total'], 2)
 
     def test_boot_before_after_equal_missing_and_invalid_event_time(self):

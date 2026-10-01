@@ -550,7 +550,7 @@ Item {
               width: parent.width
               sourceComponent: {
                 if (root.sessionsLoading) return loadingView
-                if (root.sessionsLoading || root.sessions.length === 0) return emptyView
+                if (root.sessions.length === 0) return emptyView
                 return root.tab === "machine" ? machineView : notesView
               }
             }

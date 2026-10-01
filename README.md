@@ -239,16 +239,27 @@ A completed candidate starting at or after the final completed system-upgrade
 transaction and ending at or before the newest migration completion marker is
 `migration-inferred`. Both ends include equal-second timestamps. Markers
 establish a migration-phase bracket, not the caller of a command: concurrent
-manual commands cannot be ruled out. Missing markers, an unfinished candidate,
-or an unfinished system transaction cannot establish that inference.
+manual commands cannot be ruled out. When the system upgrade has nothing to
+do and opens no transaction, its last recorded log line is the lower bound;
+a migration completion marker supplies the evidence that the updater proceeded
+after that step. Missing markers, an unfinished candidate, or a system
+transaction that started without completing cannot establish that inference.
 
 Inferred rows count toward the update and reboot inference. Omarchy and
 reboot-related rows stay in their usual groups and carry an `(inferred)` label;
 remaining rows appear under **Migration package changes (inferred)**. All other
 candidates appear under **Other changes during this window** with separate
-counts. They do not change primary totals, carried Omarchy versions or reboot
+counts. They do not change primary totals, that session’s release jump or reboot
 inference. AUR provenance comes from the invocation and cache path, independently
 of attribution.
+
+The version known at the start of each session comes from all earlier recorded
+`omarchy`/`omarchy-dev` package events, including installer transactions, manual
+changes and channel switches outside update windows. Later uncertain or manual
+changes can seed the next session without rewriting an earlier session’s jump
+or claiming that those packages came from the update. This follows the
+[implementation review](https://github.com/BVisagie/omarchy-what-changed/pull/2#pullrequestreview-5382511305),
+which refines the plan’s original restriction on version carry-forward.
 
 Package summaries and version transitions use all primary events before the
 500-row display budget. Omarchy and reboot-related facts are retained beyond
@@ -282,7 +293,7 @@ your history in it.
 |---|---|
 | Packages and versions | Recorded events in `/var/log/pacman.log`; attribution is recognized or inferred as described above |
 | AUR provenance | Inferred from the pacman invocation and yay/paru cache path |
-| Omarchy version | Ordered `omarchy`/`omarchy-dev` events. The first source and final destination define a jump; removals clear the known active version. Sessions without an event carry the last known version, never today's installed version |
+| Omarchy version | All earlier `omarchy`/`omarchy-dev` events seed the known package/version at the session start. Only primary session events define its jump from first source to final destination. Active-package removal clears the known version; today's installed version is never substituted for missing log evidence |
 | Migrations | Completion mtimes of `~/.local/state/omarchy/migrations/*.sh` inside the fixed window |
 | Reboot needed | Primary reboot-class event timestamps compared with `btime` in `/proc/stat`: pending, rebooted, unknown or not indicated. This establishes whether a reboot followed, not which kernel booted |
 | Current system reboot request | The separate `reboot-required` marker compared with boot time; an older marker is stale. `omarchy-update-restart` does not clear it. Omarchy reboot/shutdown clear it; other reboot paths may leave it behind |
@@ -462,6 +473,12 @@ started without completing, not that the whole update succeeded or failed.
 `counts` includes all `update-command` and `migration-inferred` events before
 display truncation. `nearbyCounts` has the same operation-count shape for
 `nearby-uncertain` events. Each `omitted` count describes only its own rows.
+The `omarchy` object starts from all Omarchy package events logged before this
+session, then reduces only its primary events. Outside or uncertain events do
+not create a release jump for this session; they can establish the package and
+version known when the next session starts. Installer history seeds the first
+session, and removal of the active package without replacement leaves the next
+version unknown. Internal version seeds are not exposed in the JSON contract.
 `rebootStatus` is `pending`, `rebooted`, `unknown` or `not-indicated`;
 `rebootRequired` is true only for `pending`. Historical `rebootReason` names remain
 after a subsequent boot. Missing/unparseable boot or event timestamps, and an

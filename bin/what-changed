@@ -137,7 +137,13 @@ parse_log() {
     function flush_command(   i, sep) {
       if (!started || !have_command) return
       if (own && tx_started > tx_done) incomplete = 1
-      if (system_command) system_end = (tx_started > 0 && tx_started == tx_done ? tx_end : -1)
+      # A no-op system step has no transaction. Its last log line can bracket
+      # migrations only with a later completion marker. Never use that fallback
+      # for a transaction that started without finishing.
+      if (system_command) {
+        if (tx_started == 0 && tx_done == 0) system_end = cmd_last_epoch
+        else system_end = (tx_started > 0 && tx_started == tx_done ? tx_end : -1)
+      }
       commands[++ncmd] = sprintf("{\"owned\":%s,\"startedEpoch\":%d,\"finishedEpoch\":%d,\"complete\":%s,\"events\":[",
         own ? "true" : "false", cmd_epoch, tx_end,
         (tx_started > 0 && tx_started == tx_done ? "true" : "false"))
@@ -152,8 +158,10 @@ parse_log() {
       flush_command()
       printf "{\"startedAt\":\"%s\",\"finishedAt\":\"%s\",\"startedEpoch\":%d,\"finishedEpoch\":%d,",
         jesc(s_start), jesc(s_last), s_start_epoch, s_last_epoch
-      printf "\"id\":\"%s\",\"incomplete\":%s,\"systemCompletedEpoch\":%d,\"commands\":[",
+      printf "\"id\":\"%s\",\"incomplete\":%s,\"systemBoundaryEpoch\":%d,",
         s_id, (incomplete ? "true" : "false"), system_end
+      printf "\"versionBefore\":{\"package\":\"%s\",\"version\":\"%s\"},\"commands\":[",
+        field(s_seed_package, 128), field(s_seed_version, 64)
       sep = ""
       for (i = 1; i <= ncmd; i++) { printf "%s%s", sep, commands[i]; sep = "," }
       printf "]}\n"
@@ -165,6 +173,8 @@ parse_log() {
       s_start_epoch = epoch_of(ts); s_last_epoch = s_start_epoch
       s_id = s_start_epoch >= 0 ? strftime("%Y%m%dT%H%M%SZ", s_start_epoch, 1) : "unknown"
       ncmd = 0; incomplete = 0; system_end = -1
+      s_seed_package = (known_package != "" ? known_package : "omarchy")
+      s_seed_version = known_version
       own_until = (s_start_epoch >= 0 ? s_start_epoch + ownwindow : 0)
       delete commands
     }
@@ -193,7 +203,7 @@ parse_log() {
       system_command = own && index(cmd, "pacman -Syu ") == 1
       aur = (index(cmd, "pacman -U") == 1 &&
              (index(cmd, "/.cache/yay/") > 0 || index(cmd, "/.cache/paru/") > 0))
-      have_command = 1; cmd_epoch = e; tx_end = -1
+      have_command = 1; cmd_epoch = e; cmd_last_epoch = e; tx_end = -1
       tx_started = 0; tx_done = 0; nev = 0; delete ev
       if (own) {
         s_last = ts
@@ -202,19 +212,18 @@ parse_log() {
       next
     }
 
-    !started || !have_command { next }
-
     {
       e = epoch_of(ts)
-      if (own) {
+      if (started && have_command) cmd_last_epoch = e
+      if (started && have_command && own) {
         s_last = ts
         if (e >= 0) { s_last_epoch = e; own_until = e + ownwindow }
       }
     }
 
     cat != "ALPM" { next }
-    rest == "transaction started" { tx_started++; next }
-    rest == "transaction completed" { tx_done++; tx_end = e; next }
+    rest == "transaction started" { if (started && have_command) tx_started++; next }
+    rest == "transaction completed" { if (started && have_command) { tx_done++; tx_end = e }; next }
 
     {
       sp = index(rest, " ")
@@ -233,6 +242,16 @@ parse_log() {
       if (arrow > 0) { from = substr(vers, 1, arrow - 1); to = substr(vers, arrow + 4) }
       else if (op == "removed") from = vers
       else to = vers
+      # Version state is a machine fact from all recorded Omarchy events,
+      # including installer rows and channel switches outside session windows.
+      # Snapshot it at the next keyring boundary; attribution still determines
+      # only the session counts and release jump.
+      if (name == "omarchy" || name == "omarchy-dev") {
+        if (op == "removed") {
+          if (known_package == name || known_version == "") known_version = ""
+        } else { known_package = name; known_version = cap(to, 64) }
+      }
+      if (!started || !have_command) next
       ev[++nev] = sprintf("{\"op\":\"%s\",\"name\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"aur\":%s,\"occurredAt\":\"%s\",\"epoch\":%d}",
         op, field(name, 128), field(from, 64), field(to, 64),
         (aur ? "true" : "false"), field(ts, 32), e)
@@ -391,8 +410,8 @@ enrich_sessions() {
                               and (all(.events[]; .epoch >= 0 and .epoch <= $windowEnd))
                               and (.finishedEpoch < 0 or .finishedEpoch <= $windowEnd)))
           | (if .owned then "update-command"
-             elif .complete and $s.systemCompletedEpoch >= 0
-                  and .startedEpoch >= $s.systemCompletedEpoch
+             elif .complete and $s.systemBoundaryEpoch >= 0
+                  and .startedEpoch >= $s.systemBoundaryEpoch
                   and .finishedEpoch >= .startedEpoch and .finishedEpoch <= $migrationEnd
              then "migration-inferred" else "nearby-uncertain" end) as $attribution
           | .events[] | . + {attribution: $attribution, bucket: (. + {attribution: $attribution} | bucket)}
@@ -415,26 +434,26 @@ enrich_sessions() {
          counts: (($primary | counts) + {omitted: (($primary | length) - ($shown | length))}),
          nearbyCounts: (($nearby | counts) + {omitted: (($nearby | length) - ($nearbyShown | length))}),
          groupCounts: ($events | group_by(.bucket) | map({key: .[0].bucket, value: length}) | from_entries),
+         versionBefore: $s.versionBefore,
          versionEvents: ($primary | map(select(.name == "omarchy" or .name == "omarchy-dev"))),
          events: ($shown + $nearbyShown)}
     ]
-  # A removal makes the carried version unknown. The currently installed package is
-  # never substituted for missing historical evidence.
-  | [foreach .[] as $s ({version: "", package: "omarchy", session: null};
-       . as $state
-       | (reduce $s.versionEvents[] as $e
-           ({version: $state.version, package: $state.package, from: null};
-            if .from == null then .from = (if $e.from != "" then $e.from else .version end) else . end
-            | if $e.op == "removed" then
-                if .package == $e.name or .version == "" then .version = "" end
-              else .version = $e.to | .package = $e.name end)) as $v
-       | {version: $v.version, package: $v.package,
-          session: ($s | del(.versionEvents) | . + {omarchy:
-            {package: $v.package, from: ($v.from // $v.version), to: $v.version,
-             jumped: supportedJump(($v.from // $v.version); $v.version),
-             jump: (if supportedJump(($v.from // $v.version); $v.version)
-                    then "\($v.from) → \($v.version)" else null end)}})};
-       .session)]
+  # Start each session with the package state observed before its boundary.
+  # Only primary events define its own jump. Later manual/candidate events seed
+  # future sessions in the parser without rewriting earlier session history.
+  | map(. as $s
+      | (reduce $s.versionEvents[] as $e
+          ({version: $s.versionBefore.version, package: $s.versionBefore.package, from: null};
+           if .from == null then .from = (if $e.from != "" then $e.from else .version end) else . end
+           | if $e.op == "removed" then
+               if .package == $e.name or .version == "" then .version = "" end
+             else .version = $e.to | .package = $e.name end)) as $v
+      | del(.versionEvents, .versionBefore)
+      | . + {omarchy:
+          {package: $v.package, from: ($v.from // $v.version), to: $v.version,
+           jumped: supportedJump(($v.from // $v.version); $v.version),
+           jump: (if supportedJump(($v.from // $v.version); $v.version)
+                  then "\($v.from) → \($v.version)" else null end)}})
   | {schemaVersion: $schema, sessions: reverse,
      currentRebootRequest: (if $markerExists | not then "absent"
        elif $boot == null or $marker == null or $marker == $boot then "unknown"
@@ -458,7 +477,7 @@ group_session() {
       {id: "aur", title: "AUR"},
       {id: "other", title: "Other packages", collapsed: true},
       {id: "nearby", title: "Other changes during this window",
-       explanation: "These transactions may come from migrations or manual commands. They are excluded from the update totals, version and reboot inference."}
+       explanation: "These transactions may come from migrations or manual commands. They are excluded from update totals, the session release jump and reboot inference."}
     ]
   | map(. as $g
       | if .id == "migrations" then
