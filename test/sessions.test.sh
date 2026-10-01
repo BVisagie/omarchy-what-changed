@@ -18,6 +18,8 @@ export WHAT_CHANGED_PACMAN_LOG="$FIXTURE"
 export WHAT_CHANGED_STATE_DIR="$TMP/state"
 export WHAT_CHANGED_CACHE_DIR="$TMP/cache"
 export WHAT_CHANGED_STATE_HOME="$TMP/marker"
+printf 'btime 1\n' >"$TMP/proc-stat"
+export WHAT_CHANGED_PROC_STAT="$TMP/proc-stat"
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
@@ -301,7 +303,7 @@ is "nor is a hand-run -Rns two days later" \
 is "and the counts agree" "$(jq -r '.session.counts.total' <<<"$D")" 3
 
 # yay -S --needed is `omarchy pkg aur add`; yay -Sua, which the update runs,
-# never passes it. So this is excluded even while the window is open.
+# never passes it. Without a completion bracket this is nearby activity.
 ADD="$TMP/aur-add.log"
 {
   echo "[2026-09-08T20:41:29+0200] [PACMAN] Running 'pacman -Sy --noconfirm archlinux-keyring'"
@@ -310,9 +312,9 @@ ADD="$TMP/aur-add.log"
   echo "[2026-09-08T20:44:00+0200] [PACMAN] Running 'pacman -U --needed --noconfirm --config /etc/pacman.conf -- /home/t/.cache/yay/handadded/handadded-1.0-1-x86_64.pkg.tar.zst'"
   echo "[2026-09-08T20:44:01+0200] [ALPM] installed handadded (1.0-1)"
 } >"$ADD"
-is "omarchy pkg aur add is excluded even inside the window" \
+is "omarchy pkg aur add remains uncertain inside the window" \
    "$(WHAT_CHANGED_PACMAN_LOG="$ADD" "$CLI" show --json --expand other \
-      | jq -r '[.groups[].items[]?|select(.name=="handadded")]|length')" 0
+      | jq -r '[.groups[].items[]?|select(.name=="handadded" and .attribution=="nearby-uncertain")]|length')" 1
 
 echo
 echo "grouping does not mistake libraries for applications"

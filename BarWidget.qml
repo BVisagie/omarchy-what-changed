@@ -11,7 +11,7 @@ import "Model.js" as Model
 // are notes you have not read", never "there are updates to install". That is
 // `omarchy.system-update`'s job. Hence no badge, no count, and no presence at
 // all once the newest session has been read -- and hence no Timer anywhere in
-// this file, since both things that can change the answer are events.
+// this file: this release refreshes at shell startup and read-marker changes.
 BarWidget {
   id: root
   moduleName: "io.github.bvisagie.what-changed"
@@ -58,8 +58,8 @@ BarWidget {
 
   Component.onCompleted: root.refresh()
 
-  // An escape hatch for the one case the shell restart does not cover: an
-  // update run over ssh or a TTY, where omarchy-restart-shell could not run.
+  // Manual refresh also covers failed updates, SSH/TTY runs without a shell
+  // restart, and upstream restarting before later package steps finish.
   //   omarchy-shell -q io.github.bvisagie.what-changed refresh
   IpcHandler {
     target: "io.github.bvisagie.what-changed"
@@ -83,10 +83,10 @@ BarWidget {
     }
   }
 
-  // One of the two events: the overlay marks the newest session read as it
-  // opens, and this makes the icon disappear on that write rather than at the
-  // next shell start. (The other is a new session, which only `omarchy update`
-  // creates and which always ends in `omarchy-restart-shell`.)
+  // Opening the overlay marks the newest session read, clearing the icon on
+  // that write. Shell startup is the other refresh point. Stable restarts near
+  // the end of an update; inspected upstream restarts before the later steps,
+  // which need a manual refresh in this accuracy release.
   FileView {
     path: root.statePath
     watchChanges: true

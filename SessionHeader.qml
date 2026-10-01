@@ -77,7 +77,7 @@ Item {
         if (!root.current) return ""
         var line = Model.countsText(root.current.counts)
         if (root.current.incomplete)
-          line += "   ·   This session may be incomplete."
+          line += "   ·   Unfinished package transaction."
         return line
       }
       textFormat: Text.PlainText

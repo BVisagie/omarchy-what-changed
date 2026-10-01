@@ -43,6 +43,18 @@ Column {
     font.pixelSize: Style.font.body
   }
 
+  Text {
+    visible: root.session && root.session.nearbyCounts.total > 0
+    width: root.width
+    text: root.session ? root.session.nearbyCounts.total + " other changes during this window (excluded from update totals)." : ""
+    textFormat: Text.PlainText
+    wrapMode: Text.WordWrap
+    color: root.foreground
+    opacity: 0.6
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+  }
+
   Repeater {
     model: root.groups
 
@@ -66,6 +78,18 @@ Column {
         font.pixelSize: Style.font.caption
         font.capitalization: Font.AllUppercase
         font.letterSpacing: 0.6
+      }
+
+      Text {
+        visible: group.modelData.explanation !== ""
+        width: group.width
+        text: group.modelData.explanation
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        opacity: 0.6
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
 
       // A group that carries a summary says its size in one line. Migration
@@ -95,7 +119,7 @@ Column {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             width: group.nameColumn
-            text: modelData.name
+            text: modelData.name + (modelData.attribution === "migration-inferred" ? " (inferred)" : "")
             textFormat: Text.PlainText
             color: root.foreground
             elide: Text.ElideRight
@@ -117,6 +141,16 @@ Column {
             font.pixelSize: Style.font.body
           }
         }
+      }
+
+      Text {
+        visible: group.modelData.omitted > 0
+        text: group.modelData.omitted + " package rows omitted from this group."
+        textFormat: Text.PlainText
+        color: root.foreground
+        opacity: 0.5
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
       }
 
       // A collapsed group states its size and stays shut until asked.
@@ -149,13 +183,15 @@ Column {
   }
 
   Text {
-    visible: root.outputTruncated || (root.session && root.session.counts.omitted > 0)
+    visible: root.outputTruncated || (root.session && (root.session.counts.omitted > 0 || root.session.nearbyCounts.omitted > 0))
     width: root.width
     text: {
       if (!root.session) return ""
       var parts = []
       if (root.session.counts.omitted > 0)
         parts.push(root.session.counts.omitted + " further package rows omitted.")
+      if (root.session.nearbyCounts.omitted > 0)
+        parts.push(root.session.nearbyCounts.omitted + " further nearby rows omitted.")
       if (root.outputTruncated)
         parts.push("This session is too large to list in full.")
       return parts.join(" ")

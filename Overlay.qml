@@ -33,6 +33,8 @@ Item {
   property bool sessionsUnavailable: false
   property string sessionsStderr: ""
 
+  property string currentRebootRequest: "absent"
+
   property var session: null
   property var groups: []
   property string showError: ""
@@ -91,7 +93,7 @@ Item {
 
   // Host-initiated teardown (`shell hide` lands here). It must not call back
   // into shell.hide(), which is what invoked it.
-  function close() { root.opened = false }
+  function close() { root.opened = false; root.cancelRequests() }
 
   // Every user-initiated dismissal — Esc, q, the scrim — goes through the host
   // so `keepLoaded: false` actually unloads us again.
@@ -121,13 +123,61 @@ Item {
 
   // ------------------------------------------------------------- data load
 
+  // Each launch owns a separate Process and a frozen identity. Stopping an
+  // older process cannot relabel its collector/exit callbacks as a new request.
+  property var requests: ({})
+  property int requestGeneration: 0
+
+  function isCurrentRequest(proc) {
+    return root.opened && root.requests[proc.identity.kind] === proc
+      && ((proc.identity.kind === "sessions" || proc.identity.kind === "system-status")
+          || (root.currentSession && root.currentSession.id === proc.identity.sessionId))
+  }
+
+  function cancelRequest(kind) {
+    var proc = root.requests[kind]
+    if (!proc) return
+    root.requests[kind] = null
+    proc.running = false
+    proc.destroy()
+  }
+
+  function cancelRequests() {
+    for (var kind in root.requests) root.cancelRequest(kind)
+  }
+
+  function startRequest(kind, argv, sessionId) {
+    root.cancelRequest(kind)
+    var identity = Object.freeze({kind: kind, sessionId: sessionId || "",
+                                  generation: ++root.requestGeneration, argv: Object.freeze(argv.slice())})
+    var proc = requestProcess.createObject(root, {identity: identity})
+    root.requests[kind] = proc
+    proc.running = true
+  }
+
+  function clearSession() {
+    root.cancelRequest("show")
+    root.cancelRequest("notes")
+    root.cancelRequest("compare")
+    root.cancelRequest("system-status")
+    root.session = null
+    root.groups = []
+    root.showError = ""
+    root.showLoading = false
+    root.outputTruncated = false
+    root.notes = null
+    root.notesLoading = false
+    root.notesLoaded = false
+    body.scrollTo(0)
+  }
+
   function reloadSessions() {
+    root.clearSession()
     root.sessionsLoading = true
     root.sessionsError = ""
     root.sessionsUnavailable = false
     root.sessionsStderr = ""
-    sessionsProc.running = false
-    sessionsProc.running = true
+    root.startRequest("sessions", [root.cli, "sessions", "--json"], "")
   }
 
   function onSessionsRead(out) {
@@ -135,42 +185,51 @@ Item {
     root.sessionsLoading = false
     root.sessions = r.sessions
     root.sessionsError = r.error
-
+    root.currentRebootRequest = r.currentRebootRequest || "absent"
     var index = 0
     if (root.requestedSessionId)
       for (var i = 0; i < r.sessions.length; i++)
         if (r.sessions[i].id === root.requestedSessionId) { index = i; break }
     root.sessionIndex = index
     root.requestedSessionId = ""
-
     if (r.sessions.length > 0) root.loadSession()
   }
 
   function loadSession() {
+    root.clearSession()
     if (!root.currentSession) return
     root.showLoading = true
-    root.showError = ""
-    root.notes = null
-    root.notesLoaded = false
-    showProc.running = false
-    showProc.running = true
+    root.requestShow()
     if (root.tab === "notes") root.loadNotes()
   }
 
-  function onShowRead(out) {
+  function requestShow() {
+    if (!root.currentSession || root.sessionsLoading) return
+    var id = root.currentSession.id
+    var argv = [root.cli, "show", id, "--json"]
+    if (root.expanded) argv = argv.concat(["--expand", "other"])
+    root.startRequest("show", argv, id)
+  }
+
+  function onShowRead(out, sessionId) {
     var r = Model.parseShow(out)
     root.showLoading = false
+    if (r.session && r.session.id !== sessionId) {
+      root.showError = "Could not read this session."
+      return
+    }
     root.session = r.session
     root.groups = r.groups
     root.showError = r.error
     root.outputTruncated = r.outputTruncated === true
+    root.currentRebootRequest = r.currentRebootRequest || "absent"
   }
 
   function loadNotes() {
-    if (root.notesLoaded || root.notesLoading || !root.currentSession) return
+    if (root.notesLoaded || root.notesLoading || root.sessionsLoading || !root.currentSession) return
     root.notesLoading = true
-    notesProc.running = false
-    notesProc.running = true
+    var id = root.currentSession.id
+    root.startRequest("notes", [root.cli, "notes", id, "--json"], id)
   }
 
   function onNotesRead(out) {
@@ -179,10 +238,47 @@ Item {
     root.notesLoaded = true
   }
 
+  // Wait for both collectors and exit before consuming a result. Quickshell
+  // can deliver these in either order, including on cancellation.
+  function finishRequest(proc) {
+    if (!root.isCurrentRequest(proc) || !proc.stdoutDone || !proc.stderrDone || !proc.exitDone) return
+    var kind = proc.identity.kind
+    var code = proc.exitCode
+    var diagnostic = Model.sentence(String(proc.errorText || "").replace(/^what-changed:\s*/, "").trim())
+    if (kind === "sessions") {
+      if (code === 0) root.onSessionsRead(proc.outputText)
+      else {
+        root.sessionsLoading = false
+        root.sessions = []
+        root.sessionsUnavailable = code !== 3
+        root.sessionsError = diagnostic || (code === 3
+          ? "No update sessions found in /var/log/pacman.log." : "Could not read /var/log/pacman.log.")
+        // status still answers for an empty history, so an unrelated current
+        // reboot request remains visible without changing sessions exit code 3.
+        if (code === 3) root.startRequest("system-status", [root.cli, "status", "--json"], "")
+      }
+    } else if (kind === "system-status") {
+      if (code === 0) root.currentRebootRequest = Model.parseRebootRequest(proc.outputText)
+    } else if (kind === "show") {
+      if (code === 0) root.onShowRead(proc.outputText, proc.identity.sessionId)
+      else { root.showLoading = false; root.showError = diagnostic || "Could not read this session." }
+    } else if (kind === "notes") {
+      if (code === 0) root.onNotesRead(proc.outputText)
+      else {
+        root.notesLoading = false
+        root.notesLoaded = true
+        root.notes = {ok: false, status: "error", releases: [],
+                      message: diagnostic || "Release notes are unavailable."}
+      }
+    } else if (kind === "compare" && code === 0) root.onCompareRead(proc.outputText)
+    if (root.requests[kind] === proc) root.requests[kind] = null
+    proc.destroy()
+  }
+
   // --------------------------------------------------------------- actions
 
   function step(delta) {
-    if (root.sessions.length === 0) return
+    if (root.sessionsLoading || root.sessions.length === 0) return
     var next = root.sessionIndex + delta
     if (next < 0 || next >= root.sessions.length) return
     root.sessionIndex = next
@@ -199,11 +295,10 @@ Item {
   function toggleTab() { root.setTab(root.tab === "machine" ? "notes" : "machine") }
 
   function expandOther() {
-    if (root.expanded) return
+    if (root.expanded || root.sessionsLoading || !root.currentSession) return
     root.expanded = true
     root.showLoading = true
-    showProc.running = false
-    showProc.running = true
+    root.requestShow()
   }
 
   function onCompareRead(out) {
@@ -212,9 +307,9 @@ Item {
   }
 
   function openCompare() {
-    if (!root.currentSession || !root.currentSession.omarchy.jumped) return
-    compareProc.running = false
-    compareProc.running = true
+    if (root.sessionsLoading || !root.currentSession || !root.currentSession.omarchy.jumped) return
+    var id = root.currentSession.id
+    root.startRequest("compare", [root.cli, "compare-url", id], id)
   }
 
   // ----------------------------------------------------------------- procs
@@ -224,81 +319,42 @@ Item {
     command: [root.cli, "mark-read"]
   }
 
-  Process {
-    id: sessionsProc
-    command: [root.cli, "sessions", "--json"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onSessionsRead(text)
-    }
-    // Exit and stream-finished have no guaranteed order: when a failed exit
-    // beats the collector, upgrade the generic message once the real one lands.
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.sessionsStderr = Model.text(String(text || "").replace(/^what-changed:\s*/, "").trim(), 200)
-        if (root.sessionsUnavailable && root.sessionsStderr !== "")
-          root.sessionsError = Model.sentence(root.sessionsStderr)
+  Component {
+    id: requestProcess
+    Process {
+      id: proc
+      required property var identity
+      property string outputText: ""
+      property string errorText: ""
+      property bool stdoutDone: false
+      property bool stderrDone: false
+      property bool exitDone: false
+      property int exitCode: 0
+      command: identity.argv
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: {
+          if (!root.isCurrentRequest(proc)) return
+          proc.outputText = text
+          proc.stdoutDone = true
+          root.finishRequest(proc)
+        }
       }
-    }
-    onExited: function (code) {
-      if (code === 0 || !root.sessionsLoading) return
-      root.sessionsLoading = false
-      root.sessions = []
-      // 3 is "this machine has no update sessions yet", which is a true and
-      // complete answer. Anything else means the log itself did not read.
-      root.sessionsUnavailable = (code !== 3)
-      if (!root.sessionsUnavailable)
-        root.sessionsError = "No update sessions found in /var/log/pacman.log."
-      else
-        root.sessionsError = root.sessionsStderr !== ""
-          ? Model.sentence(root.sessionsStderr)
-          : "Could not read /var/log/pacman.log."
-    }
-  }
-
-  Process {
-    id: showProc
-    command: root.expanded
-      ? [root.cli, "show", root.currentSession ? root.currentSession.id : "latest", "--json", "--expand", "other"]
-      : [root.cli, "show", root.currentSession ? root.currentSession.id : "latest", "--json"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onShowRead(text)
-    }
-    onExited: function (code) {
-      if (code !== 0 && root.showLoading) {
-        root.showLoading = false
-        root.showError = "Could not read this session."
+      stderr: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: {
+          if (!root.isCurrentRequest(proc)) return
+          proc.errorText = text
+          proc.stderrDone = true
+          root.finishRequest(proc)
+        }
       }
-    }
-  }
-
-  Process {
-    id: notesProc
-    command: [root.cli, "notes", root.currentSession ? root.currentSession.id : "latest", "--json"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onNotesRead(text)
-    }
-    onExited: function (code) {
-      if (code !== 0 && root.notesLoading) {
-        root.notesLoading = false
-        root.notesLoaded = true
-        root.notes = { ok: false, status: "error", releases: [],
-                       message: "Release notes are unavailable." }
+      onExited: function(code) {
+        if (!root.isCurrentRequest(proc)) return
+        proc.exitCode = code
+        proc.exitDone = true
+        root.finishRequest(proc)
       }
-    }
-  }
-
-  // The CLI prints the compare URL; only a value that survives Model.safeUrl
-  // is ever handed to the browser.
-  Process {
-    id: compareProc
-    command: [root.cli, "compare-url", root.currentSession ? root.currentSession.id : "latest"]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onCompareRead(text)
     }
   }
 
@@ -329,6 +385,7 @@ Item {
       readonly property int contentHeight:
         root.contentMargin * 2 + chrome.height + Style.spacing.lg
         + content.height + Style.spacing.md + footer.height
+        + (rebootRequest.visible ? rebootRequest.implicitHeight + Style.spacing.sm : 0)
 
       radius: root.cornerRadius
       anchors.centerIn: parent
@@ -450,12 +507,26 @@ Item {
           }
         }
 
+        Text {
+          id: rebootRequest
+          anchors { top: chrome.bottom; topMargin: Style.spacing.sm; left: parent.left; right: parent.right }
+          visible: root.currentRebootRequest === "pending" || root.currentRebootRequest === "unknown"
+          text: root.currentRebootRequest === "pending"
+            ? "Current system reboot request: pending (may come from another system action)."
+            : "Current system reboot request: applicability unknown."
+          textFormat: Text.PlainText
+          color: root.foreground
+          wrapMode: Text.WordWrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
         // ------------------------------------------------------------ body
 
         Flickable {
           id: body
           anchors {
-            top: chrome.bottom; topMargin: Style.spacing.lg
+            top: rebootRequest.visible ? rebootRequest.bottom : chrome.bottom; topMargin: Style.spacing.lg
             left: parent.left; right: parent.right
             bottom: footer.top; bottomMargin: Style.spacing.md
           }

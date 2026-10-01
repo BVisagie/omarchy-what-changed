@@ -24,8 +24,9 @@ your machine, scoped to one update run. Other plugins show you what an update
 
 Every package, migration and reboot flag from one update session, grouped so a
 145-package night is legible. Omarchy's own version move first, then anything
-that wants a reboot, then named applications, then the long tail collapsed
-behind a count.
+with reboot-related changes, then named applications and inferred migration
+package changes, then the long tail collapsed behind a count. Other changes
+during the same window are shown separately and excluded from update totals.
 
 ### Release notes
 
@@ -80,20 +81,23 @@ disappears the moment you open the overlay. It carries no badge and no count. It
 never tells you updates are available — that is `omarchy.system-update`'s job,
 and this plugin does not duplicate, clone or replace it.
 
-Nothing polls. Two events can change the answer and both are handled directly:
-
-- A **new session** can only be created by `omarchy update`, which always ends by
-  restarting the shell — so the widget is rebuilt right after the only event
-  that matters.
-- The **read marker** is watched with a `FileView`, so the icon clears the
-  instant you open the overlay.
-
-The one case the shell restart does not cover is an update run over ssh or a TTY,
-where `omarchy-restart-shell` could not run. Force a re-check with:
+Nothing polls. The widget checks recorded sessions when the shell starts, and
+watches the read marker with a `FileView` so opening the overlay clears the icon.
+Stable 4.0.4 restarts the shell at the end of a successful update. Failed updates
+and updates over SSH or a TTY may need a manual re-check:
 
 ```bash
 omarchy-shell -q io.github.bvisagie.what-changed refresh
 ```
+
+The inspected upstream development flow restarts the shell before hooks, mise
+and AUR finish. Version 1.1.0 can therefore show a partial session until a manual
+refresh or another shell restart. Reading that session records its ID; later
+changes to the same ID do not restore the icon in this release. Event-driven
+refresh and content fingerprints are reserved for a separately reviewed release.
+
+A current system reboot request appears in the overlay only. It never makes the
+bar icon appear, even if the request came from an unrelated system action.
 
 That handler lives on the bar widget, so it exists only while the widget is in
 `bar.layout` — which is the normal installation, and the only one where there is
@@ -155,14 +159,14 @@ $ what-changed sessions
 8 Sep 20:41  4.0.2 → 4.0.3     135↑ 5+ 4- 1↻         reboot
 
 $ what-changed show 20260908T184129Z
-8 Sep 20:41  ·  omarchy 4.0.2 → 4.0.3  ·  stable  ·  reboot needed
+8 Sep 20:41  ·  omarchy 4.0.2 → 4.0.3  ·  current channel: stable  ·  reboot needed
 145 packages changed  ·  5 added  ·  4 removed
 
 Omarchy
   omarchy           4.0.2-1 → 4.0.3-1
   omarchy-settings  4.0.2-1 → 4.0.3-1
 
-Needs reboot
+Reboot-related changes
   linux  7.1.9.arch1-2 → 7.2.3.arch1-3
   mesa   1:26.2.1-1 → 1:26.2.2-1
 
@@ -209,43 +213,67 @@ with no hook and no capture step.
 Every `omarchy update` begins by running
 `pacman -Sy --noconfirm archlinux-keyring` (from `omarchy-update-keyring`), and
 that lands in `/var/log/pacman.log`. **That line is the head of a session.**
-Everything until the next one belongs to it, however many pacman transactions it
-took — the keyring, the `-Syu`, one `-U` per AUR package, the orphan sweep.
+The log order splits sessions at each such invocation. Recognized update
+commands are admitted within one hour of the last recognized activity; accepted
+commands extend that rolling window. Matching is heuristic: a manual command
+with the same shape can be indistinguishable from an update step.
 
-Within that window, only the pacman invocations an update actually makes are
-counted:
-
-| Invocation | Part of the update? |
+| Invocation | Recognition |
 |---|---|
-| `pacman -Sy --noconfirm archlinux-keyring` | yes — `omarchy-update-keyring` |
-| `pacman -Syu … --overwrite /usr/share/omarchy/*` | yes — `omarchy-update-system-pkgs` |
-| `pacman -U … --config /etc/pacman.conf … /.cache/yay/…`, without `--needed` | yes — yay upgrading AUR packages |
-| `pacman -Rns …` **without** `--noconfirm` | yes — `omarchy-update-orphan-pkgs` |
-| `pacman -S --noconfirm --needed …` | no — `omarchy pkg add` |
-| `pacman -Rns --noconfirm …` | no — `omarchy pkg remove` |
-| `pacman -U … --needed …` | no — `omarchy pkg aur add` |
+| `pacman -Sy --noconfirm archlinux-keyring` | Session start and update-keyring |
+| `pacman -S --noconfirm --needed [--] omarchy-keyring` | First-run keyring install |
+| `pacman -Syu … --overwrite /usr/share/omarchy/*` | System package update |
+| `pacman -U … --config /etc/pacman.conf … /.cache/yay/…` or `/.cache/paru/…`, without `--needed` | AUR update |
+| `pacman -D … --config /etc/pacman.conf …` | AUR dependency marking |
+| `pacman -Rns …` without `--noconfirm` | Orphan sweep |
 
-Two distinctions carry most of that. Omarchy's orphan sweep runs
-`sudo pacman -Rns "${orphans[@]}"` with no `--noconfirm`, while `omarchy pkg
-remove` always passes it. And the update's AUR step runs `yay -Sua`, which
-upgrades what is installed and never passes `--needed`, while `omarchy pkg aur
-add` runs `yay -S --needed` — both of which reach pacman as the same `-U` shape.
+### Migration inference and nearby changes
 
-### And time bounds it
+Other pacman transactions are candidates regardless of command form, including
+pkg-add, pkg-drop, AUR installs with `--needed`, and direct replacements with
+`--ask 4` or `--ask=4`. Their fixed window ends at the earlier of the next session
+start and the last recognized update activity plus 1800 seconds. Candidate
+activity never extends that bound or the rolling recognition window.
 
-Shape alone is not enough, because a hand-run `sudo pacman -Rns leftover` wears
-exactly the shape of the orphan sweep. An update is a contiguous run, not a
-claim on the days that follow it, so a session only owns update-shaped commands
-that arrive within an hour of its last owned transaction — a rolling window, so
-a long AUR build extends it rather than falling outside it.
+A completed candidate starting at or after the final completed system-upgrade
+transaction and ending at or before the newest migration completion marker is
+`migration-inferred`. Both ends include equal-second timestamps. Markers
+establish a migration-phase bracket, not the caller of a command: concurrent
+manual commands cannot be ruled out. When the system upgrade has nothing to
+do and opens no transaction, its last recorded log line is the lower bound;
+a migration completion marker supplies the evidence that the updater proceeded
+after that step. Missing markers, an unfinished candidate, or a system
+transaction that started without completing cannot establish that inference.
 
-The hour is deliberately generous. Too short would silently drop real update
-content: an AUR package that took forty minutes to build would vanish from the
-session and appear nowhere else. Over-including a manual install is the milder
-error, so the window errs long.
+Inferred rows count toward the update and reboot inference. Omarchy and
+reboot-related rows stay in their usual groups and carry an `(inferred)` label;
+remaining rows appear under **Migration package changes (inferred)**. All other
+candidates appear under **Other changes during this window** with separate
+counts. They do not change primary totals, that session’s release jump or reboot
+inference. AUR provenance comes from the invocation and cache path, independently
+of attribution.
 
-Together that means the `gthumb` you install an hour after an update is not
-attributed to it — and neither is an AUR package you add two days later.
+The version known at the start of each session comes from all earlier recorded
+`omarchy`/`omarchy-dev` package events, including installer transactions, manual
+changes and channel switches outside update windows. Later uncertain or manual
+changes can seed the next session without rewriting an earlier session’s jump
+or claiming that those packages came from the update.
+
+Package summaries and version transitions use all primary events before the
+500-row display budget. Omarchy and reboot-related facts are retained beyond
+the bulk budget. A stable/dev replacement uses the removed source version and
+final installed destination; removal without replacement makes subsequent
+versions unknown. Same-release reinstalls and unsupported development versions
+do not produce release-note or compare links.
+
+A rare migration can call `omarchy-update-keyring` mid-update. It is
+indistinguishable from a separate update attempt that stops before `-Syu`, so
+1.1.0 preserves two reconstructed sessions. The second segment has no system
+upgrade bracket and its candidate rows stay uncertain. No event belongs to both
+segments, including entries at the same second as the boundary.
+
+Retained pacman history bounds what can be reconstructed; rotated-away log
+entries and missing migration markers cannot be recovered by this plugin.
 
 ### Why not a post-update hook
 
@@ -253,18 +281,21 @@ Because a hook **structurally cannot see the whole update**.
 `/usr/share/omarchy/bin/omarchy-update` calls `omarchy-hook post-update` *before*
 `omarchy-update-aur-pkgs`, `omarchy-update-mise`, `omarchy-update-orphan-pkgs`
 and `omarchy-update-restart`. A hook-written record's AUR list is empty by
-construction. Reading the log afterwards is the only approach that sees
-everything — and it works retroactively, which is why a fresh install already
-has your history in it.
+construction. Reading the log after the run includes the later package
+transactions and works retroactively, which is why a fresh install already has
+your history in it.
 
 ### What is derived, and how honestly
 
 | Field | Source |
 |---|---|
-| Packages, versions, AUR provenance | `/var/log/pacman.log`, exactly |
-| Omarchy version | The `omarchy` package event in that session. Sessions that did not move it carry the previous version forward; sessions older than the first recorded jump show none rather than guessing |
-| Migrations | `~/.local/state/omarchy/migrations/*.sh` mtimes falling inside the session window |
-| Reboot needed | A kernel-class package in that session. The live `reboot-required` marker is only trusted for the newest session, because `omarchy-update-restart` clears it |
+| Packages and versions | Recorded events in `/var/log/pacman.log`; attribution is recognized or inferred as described above |
+| AUR provenance | Inferred from the pacman invocation and yay/paru cache path |
+| Omarchy version | All earlier `omarchy`/`omarchy-dev` events seed the known package/version at the session start. Only primary session events define its jump from first source to final destination. Active-package removal clears the known version; today's installed version is never substituted for missing log evidence |
+| Migrations | Completion mtimes of `~/.local/state/omarchy/migrations/*.sh` inside the fixed window |
+| Reboot needed | Primary reboot-class event timestamps compared with `btime` in `/proc/stat`: pending, rebooted, unknown or not indicated. This establishes whether a reboot followed, not which kernel booted |
+| Current system reboot request | The separate `reboot-required` marker compared with boot time; an older marker is stale. `omarchy-update-restart` does not clear it. Omarchy reboot/shutdown clear it; other reboot paths may leave it behind |
+| Transaction completeness | `incomplete` means an owned package transaction started without completing. Pacman history cannot establish whole-update success |
 | Channel | `omarchy-channel-current`, which reports *now*, not then |
 | `mise` | Not recorded per-session anywhere, so not claimed |
 | Repo | Not in `pacman.log`, and `pacman -Si` needs a sync, so not claimed |
@@ -284,7 +315,7 @@ Two paths, both removable, and nothing else anywhere:
 | Path | What |
 |---|---|
 | `~/.local/state/io.github.bvisagie.what-changed/last-read` | One line naming the newest session you have opened. This is what makes the bar icon appear and disappear |
-| `~/.cache/io.github.bvisagie.what-changed/releases/` | Fetched release notes. Tags are immutable, so these are cached forever and fetched once each |
+| `~/.cache/io.github.bvisagie.what-changed/releases/` | Fetched release notes, cached indefinitely in 1.1.0. Release descriptions can change; revalidation is future work |
 
 It never writes to your Omarchy config, never touches `/var/log/pacman.log`, and
 never needs sudo.
@@ -364,6 +395,9 @@ honest `unknown`.
 | `manifest.json` | Plugin manifest. Also the single source of truth for the version |
 | `test/sessions.test.sh` | CLI tests against a fixture log. No network |
 | `test/model.test.js` | Intake, sanitising and formatting tests |
+| `test/accuracy.test.py` | Accuracy acceptance checks, including the minimized real 4.0.4 fixture |
+| `test/requests.test.js` | Overlay lifecycle checks with controlled callback ordering |
+| `test/runtime.test.py` | Actual Quickshell cancellation and overlapping request checks, in an isolated offscreen shell |
 | `test/fixtures/pacman.log` | A synthetic log: one full update, one thin one, plus manual pacman calls that must **not** be attributed |
 
 ## Architecture
@@ -394,6 +428,7 @@ on purpose.
 ```json
 {
   "schemaVersion": 1,
+  "currentRebootRequest": "absent",
   "sessions": [
     {
       "id": "20260908T184129Z",
@@ -412,11 +447,16 @@ on purpose.
         "jump": "4.0.2-1 → 4.0.3-1"
       },
       "rebootRequired": true,
+      "rebootStatus": "pending",
       "rebootReason": ["mesa", "linux"],
       "migrations": ["1788577553"],
       "counts": {
         "upgraded": 135, "installed": 5, "removed": 4, "downgraded": 0,
         "reinstalled": 1, "aur": 2, "total": 145, "omitted": 0
+      },
+      "nearbyCounts": {
+        "upgraded": 0, "installed": 0, "removed": 0, "downgraded": 0,
+        "reinstalled": 0, "aur": 0, "total": 0, "omitted": 0
       }
     }
   ]
@@ -424,27 +464,49 @@ on purpose.
 ```
 
 Ids are the session start in UTC (`YYYYMMDDTHHMMSSZ`); `label` is local time for
-display. `incomplete` means a pacman transaction in that window started without
-completing.
+display. `finishedAt` records only recognized update activity; candidate
+transactions never advance it. `incomplete` means an owned pacman transaction
+started without completing, not that the whole update succeeded or failed.
+
+`counts` includes all `update-command` and `migration-inferred` events before
+display truncation. `nearbyCounts` has the same operation-count shape for
+`nearby-uncertain` events. Each `omitted` count describes only its own rows.
+The `omarchy` object starts from all Omarchy package events logged before this
+session, then reduces only its primary events. Outside or uncertain events do
+not create a release jump for this session; they can establish the package and
+version known when the next session starts. Installer history seeds the first
+session, and removal of the active package without replacement leaves the next
+version unknown. Internal version seeds are not exposed in the JSON contract.
+`rebootStatus` is `pending`, `rebooted`, `unknown` or `not-indicated`;
+`rebootRequired` is true only for `pending`. Historical `rebootReason` names remain
+after a subsequent boot. Missing/unparseable boot or event timestamps, and an
+equal-second boot/change timestamp, yield `unknown`.
+
+`currentRebootRequest` is a separate top-level enum on sessions, show and status:
+`pending`, `stale`, `unknown` or `absent`. Unknown includes an unreadable boot time
+or equal-second marker/boot timestamps. It is displayed only in the overlay and
+has no effect on unread state. Channel always reports the current machine channel.
 </details>
 
 <details>
 <summary><code>what-changed show --json</code></summary>
 
-Group order is fixed and meaningful: `omarchy`, `reboot`, `apps`, `migrations`,
-`aur`, `other`. A group with a `summary` states itself in one line instead of
+Group order is fixed and meaningful: `omarchy`, `reboot`, `apps`, `migration-packages`,
+`migrations`, `aur`, `other`, `nearby`. A group with a `summary` states itself in one line instead of
 listing rows. `other` is collapsed and carries `count` with no `items` until
 `--expand other`.
 
 ```json
 {
   "schemaVersion": 1,
+  "currentRebootRequest": "absent",
   "session": { "…as above, minus events…" },
   "groups": [
     { "id": "omarchy", "title": "Omarchy",
       "items": [
         { "kind": "pkg", "op": "upgraded", "name": "omarchy",
-          "from": "4.0.2-1", "to": "4.0.3-1", "aur": false }
+          "from": "4.0.2-1", "to": "4.0.3-1", "aur": false,
+          "attribution": "update-command", "occurredAt": "2026-09-08T20:42:02+0200" }
       ] },
     { "id": "migrations", "title": "Migrations",
       "summary": "9 migrations ran",
@@ -456,7 +518,12 @@ listing rows. `other` is collapsed and carries `count` with no `items` until
 ```
 
 `op` is one of `upgraded`, `installed`, `removed`, `downgraded`, `reinstalled`.
-`outputTruncated: true` appears at the top level when the expanded view would
+Each package row has `attribution`: `update-command`, `migration-inferred` or
+`nearby-uncertain`, plus its recorded `occurredAt` timestamp. Groups carry exact
+`count` and display `omitted` values; an `explanation` qualifies inferred and
+uncertain groups. `other` remains the sole expandable group. Priority package
+facts are retained independently of the bulk budget, and nearby rows have a
+separate display budget. `outputTruncated: true` appears at the top level when the expanded view would
 have exceeded the output cap.
 </details>
 
@@ -464,7 +531,7 @@ have exceeded the output cap.
 <summary><code>what-changed status --json</code> and <code>notes --json</code></summary>
 
 ```json
-{ "schemaVersion": 1, "unread": false,
+{ "schemaVersion": 1, "unread": false, "currentRebootRequest": "absent",
   "lastRead": "20260909T082737Z",
   "newest": { "…a session, or null…" } }
 ```
@@ -489,17 +556,25 @@ which is what `NotesView.qml` renders.
 
 ## Omarchy integration points
 
-Verified against Omarchy 4.0.3. If upstream changes any of these, the
-corresponding behaviour is what breaks:
+Compatibility evidence dated **1 October 2026**:
+
+| Omarchy | Evidence and limits |
+|---|---|
+| Stable 4.0.4 | Six-event real update fixture, migration completion markers, kernel families, command forms and pinned manifest validator |
+| `quattro` at `c05d901` | Inspected command forms (including optional `--`) and pinned manifest validator; early shell restart can leave the 1.1.0 widget stale until manual refresh |
+
+These are inspected snapshots, not a guarantee for future upstream changes.
+Full desktop interaction and multi-monitor checks remain pre-release checks.
+The integration points are:
 
 | Depends on | Where | Used for |
 |---|---|---|
 | `pacman -Sy --noconfirm archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
-| `omarchy-restart-shell` ends every update | `bin/omarchy-update-restart` | The widget refreshing without a poller |
+| Stable restarts near the end; inspected upstream restarts before later steps | `bin/omarchy-update-restart` | The widget refreshing without a poller |
 | The orphan sweep omits `--noconfirm` | `bin/omarchy-update-orphan-pkgs` | Telling the sweep apart from `omarchy pkg remove` |
 | The AUR step runs `yay -Sua`, never `--needed` | `bin/omarchy-update-aur-pkgs` | Telling it apart from `omarchy pkg aur add` |
 | The post-update hook fires before AUR/mise | `bin/omarchy-update` | Why there is no hook |
-| Migration markers are touched as they run | `bin/omarchy-migrate` | Attributing migrations by mtime |
+| Migration markers are touched after success | `bin/omarchy-migrate` | Attributing migrations by mtime |
 | The menu merges a user JSONC extension | `shell/plugins/menu/Menu.qml` | The `Update › What changed` entry |
 | Third-party widgets receive `bar`, `moduleName`, `settings`, and `bar.shell` exposes `summon` | `shell/plugins/bar/Bar.qml`, `shell/Ui/PluginBarApi.qml` | The widget opening the overlay in-process |
 | For a `bar-widget` plugin, "enabled" means placement in `bar.layout` | `shell/services/PluginRegistry.qml` | Why enabling needs `--section` |
@@ -510,16 +585,29 @@ corresponding behaviour is what breaks:
 ```bash
 ./test/sessions.test.sh      # CLI: parsing, grouping, marker, failure modes
 node test/model.test.js      # intake, sanitising, Markdown blocks, formatting
+python3 test/accuracy.test.py # migration bounds, versions, exact counts, boot timing
+node test/requests.test.js   # superseded callbacks and both completion orders
+python3 test/runtime.test.py # isolated offscreen Quickshell request/cancellation acceptance
 omarchy plugin validate .
 /usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell *.qml
 ```
 
-Neither suite touches the network — `curl` is shimmed to fail inside
+None of these suites touches the network — `curl` is shimmed to fail inside
 `sessions.test.sh`, so an accidental fetch shows up as a failure rather than a
-slow, flaky pass. Both are plain scripts: no framework, and no dependency the
-plugin does not already have.
+slow, flaky pass. The tests use plain scripts and Python's standard library.
+Python, Node and Quickshell are test tools; Python and Node are not runtime dependencies.
 
-The CLI honours four environment overrides, which is what makes it testable:
+Runtime evidence on 1 October 2026: the isolated Quickshell test confirmed
+`running = false` sends SIGTERM. The handler exited with code 23, and stdout,
+stderr, then exit callbacks arrived in that order. Delayed A→B→C show, notes and
+compare requests settled on C; controlled lifecycle tests also cover exit before
+collectors. The complete overlay loaded against installed 4.0.4 components and
+read the six-event real fixture. QML lint still reports import/type and
+unqualified-access warnings; static lint and this load check do not establish
+visual layout, menu/bar interaction, dismissal or multi-monitor behavior. Those
+checks remain required before publishing.
+
+The CLI honours environment overrides, which is what makes it testable:
 
 | Variable | Overrides |
 |---|---|
@@ -527,7 +615,9 @@ The CLI honours four environment overrides, which is what makes it testable:
 | `WHAT_CHANGED_STATE_DIR` | Omarchy's state dir (migrations, reboot marker) |
 | `WHAT_CHANGED_STATE_HOME` | This plugin's own state dir (the read marker) |
 | `WHAT_CHANGED_CACHE_DIR` | The release-note cache |
-| `WHAT_CHANGED_OWN_WINDOW` | Seconds a session may still claim a command after its last owned transaction (default 3600) |
+| `WHAT_CHANGED_OWN_WINDOW` | Seconds a session may still claim a recognized command after its last recognized activity (default 3600) |
+| `WHAT_CHANGED_PROC_STAT` | Boot-time source (default `/proc/stat`); missing/invalid `btime` means unknown |
+| `WHAT_CHANGED_REBOOT_MARKER_EPOCH` | Epoch seconds for an existing reboot marker, replacing its mtime for deterministic tests |
 
 ## Local development loop
 

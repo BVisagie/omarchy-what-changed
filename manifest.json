@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.bvisagie.what-changed",
   "name": "What Changed",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "BVisagie",
   "license": "MIT",
   "description": "What actually changed after your Omarchy update? A clear, per-update summary of what landed on this machine — packages, migrations and the Omarchy version jump.",
