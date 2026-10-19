@@ -46,7 +46,7 @@ honest `unknown`.
 |---|---|
 | `bin/what-changed` | The whole read model. bash + jq + awk. Parses the log, groups, fetches notes, owns the read marker |
 | `Model.js` | Intake and formatting for QML. Sanitises CLI output, parses Markdown into blocks, formats headers and counts |
-| `Overlay.qml` | The summoned surface: tab state, keys, `Process` wiring, session navigation |
+| `Overlay.qml` | The summoned normal window: tab state, keys, `Process` wiring, session navigation |
 | `SessionHeader.qml` | The header line and the prev/next stepper |
 | `MachineView.qml` | Grouped package list. Renders what the CLI bucketed; decides nothing itself |
 | `NotesView.qml` | Release-note blocks |
@@ -55,8 +55,9 @@ honest `unknown`.
 | `test/sessions.test.sh` | CLI tests against a fixture log. No network |
 | `test/model.test.js` | Intake, sanitising and formatting tests |
 | `test/accuracy.test.py` | Accuracy acceptance checks, including the minimized real 4.0.4 fixture |
-| `test/requests.test.js` | Overlay lifecycle checks with controlled callback ordering |
+| `test/requests.test.js` | Viewer lifecycle checks with controlled callback ordering |
 | `test/runtime.test.py` | Actual Quickshell cancellation and overlapping request checks, in an isolated offscreen shell |
+| `test/window.test.py` | Complete viewer: rendered bounds at narrow/wide sizes, larger fonts, scrolling and native close/reopen |
 | `test/fixtures/pacman.log` | A synthetic log: one full update, one thin one, plus manual pacman calls that must **not** be attributed |
 | `docs/` | How it works, the CLI reference and this page |
 
@@ -84,6 +85,7 @@ node test/model.test.js      # intake, sanitising, Markdown blocks, formatting
 python3 test/accuracy.test.py # migration bounds, versions, exact counts, boot timing
 node test/requests.test.js   # superseded callbacks and both completion orders
 python3 test/runtime.test.py # isolated offscreen Quickshell request/cancellation acceptance
+python3 test/window.test.py  # rendered viewer against installed Omarchy Commons, using a fixture CLI
 omarchy plugin validate .
 /usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell *.qml
 ```
@@ -102,6 +104,40 @@ read the six-event real fixture. QML lint still reports import/type and
 unqualified-access warnings; static lint and this load check do not establish
 visual layout, menu/bar interaction, dismissal or multi-monitor behavior. Those
 checks remain required before publishing.
+
+The manifest's `overlay` entry point is retained for the shell's summon/hide
+contract; the actual surface is a standard `FloatingWindow`, managed by the
+compositor. Its `closed` signal uses the same host dismissal as Esc/q so closing
+the window cancels requests and releases the plugin Loader. Never quit the
+shared shell process to close the viewer. Modified keys pass through the reader
+without triggering its plain-letter actions.
+
+Tiling is the intended stock default. The window title is a stable rule target;
+the README includes an optional centered-floating rule. The preferred initial
+size is deliberately consistent rather than content-sized, so browsing thin
+and large sessions does not rearrange a window the user has sized.
+
+Minimum-size hints are independent of wrapping and capped to the screen. A
+short tile can still ignore them, so the viewer switches from a scrolling body
+to a scrolling whole page when the header, reboot line, footer and reading
+area no longer fit. Keyboard scrolling, including Page Up/Down, follows the
+active viewport. Entering whole-page mode explicitly clears the body's previous
+offset. The footer lists the reader's Esc/q keys; desktop close
+bindings remain the compositor's responsibility.
+
+`window.test.py` loads the real components offscreen, checks both views between
+360 and 1100 logical pixels, including 360×220 tiles that bypass the backing
+window's size-hint enforcement as a tiling compositor can. It checks larger
+fonts with and without font-scaled spacing, screen-capped and wrap-independent
+minimum hints, long version strings and unbroken release-note text. It also
+checks header collisions, access to the footer, scroll/page bounds and native
+close/reopen without stopping the host. To repeat with display scaling,
+run `QT_SCALE_FACTOR=1.5 python3 test/window.test.py`. These checks use installed
+Omarchy Commons and Quickshell; they do not replace testing the real compositor's
+window shortcuts or multi-monitor behavior.
+`OMARCHY_PATH` selects the installation, defaulting to `/usr/share/omarchy`.
+If `qs` or Commons is unavailable, this suite prints `SKIP` and exits
+successfully; use an Omarchy host to run the actual acceptance checks.
 
 The CLI honours environment overrides, which is what makes it testable:
 
@@ -145,3 +181,30 @@ To exercise the widget without waiting for a real update:
 ```
 
 The icon reacts within a second; the marker `FileView` does not need a restart.
+
+## Updating screenshots
+
+The README uses `preview.png` for This machine and `docs/img/notes.png` for
+Release notes. Capture the running viewer from the current checkout, using the
+same session, theme and window size for both views. The current pair was captured
+on 19 October 2026 with Omarchy 4.0.5 in a 900×620 logical-pixel floating window
+on a 1.6× display, including 2 logical pixels of compositor border on each side.
+Each PNG is 1446×998.
+
+Temporarily float and size the viewer, select This machine, and wait for its
+content to finish loading. Capture the window and its border:
+
+```bash
+what_changed_geometry=$(hyprctl clients -j | jq -r 'first(.[] | select(.class == "org.quickshell" and .title == "What Changed")) | "\(.at[0]-2),\(.at[1]-2) \(.size[0]+4)x\(.size[1]+4)"')
+grim -g "$what_changed_geometry" preview.png
+```
+
+Switch to Release notes, wait for the notes to finish loading, then capture the
+same geometry:
+
+```bash
+grim -g "$what_changed_geometry" docs/img/notes.png
+```
+
+Inspect both images for clipped text, stale loading states and matching session
+details. Restore the viewer's original window mode and size when finished.

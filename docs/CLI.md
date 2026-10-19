@@ -1,6 +1,6 @@
 # CLI reference
 
-`bin/what-changed` is the plugin's whole read model: the overlay runs only this
+`bin/what-changed` is the plugin's whole read model: the viewer runs only this
 CLI and renders its JSON. The [README](../README.md#the-cli) covers the commands
 and flags. This page covers session ids, exit codes and the `--json` contracts.
 
@@ -18,7 +18,7 @@ prefix matches more than one session, the newest match wins.
 | `1` | A real failure: missing or unreadable log, unknown command, no such session |
 
 `3` exists so a caller can tell "this machine has never been updated" — a true
-and complete answer — from "the log did not read". The overlay uses it to avoid
+and complete answer — from "the log did not read". The viewer uses it to avoid
 reporting a permissions problem as an empty history.
 
 ## JSON contracts
@@ -88,7 +88,7 @@ equal-second boot/change timestamp, yield `unknown`.
 
 `currentRebootRequest` is a separate top-level enum on sessions, show and status:
 `pending`, `stale`, `unknown` or `absent`. Unknown includes an unreadable boot time
-or equal-second marker/boot timestamps. It is displayed only in the overlay and
+or equal-second marker/boot timestamps. It is displayed only in the viewer and
 has no effect on unread state. Channel always reports the current machine channel.
 
 ### `what-changed show --json`

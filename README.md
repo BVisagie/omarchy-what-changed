@@ -2,7 +2,10 @@
 
 **What actually changed after my Omarchy update?**
 
-![What Changed, showing the packages that landed in one update](preview.png)
+![This machine, showing recorded package changes in the desktop window](preview.png)
+
+The screenshots show the reader floating. Stock Omarchy opens it tiled; see
+[window controls and the optional floating rule](#keys).
 
 ---
 
@@ -34,7 +37,7 @@ The official Omarchy notes for **the exact version jump that session made** —
 not "latest on GitHub" — parsed into headings, bullets and paragraphs rather
 than dumped as raw Markdown.
 
-![The release notes for the version jump that session made](docs/img/notes.png)
+![Release notes for the recorded version jump in the desktop window](docs/img/notes.png)
 
 ---
 
@@ -77,12 +80,12 @@ omarchy-shell shell summon io.github.bvisagie.what-changed \
 What Changed puts one icon in the bar, and it is **not** an update indicator.
 
 It appears only when an update has landed that you have not read yet, and it
-disappears the moment you open the overlay. It carries no badge and no count. It
+disappears the moment you open the window. It carries no badge and no count. It
 never tells you updates are available — that is `omarchy.system-update`'s job,
 and this plugin does not duplicate, clone or replace it.
 
 Nothing polls. The widget checks recorded sessions when the shell starts, and
-watches the read marker with a `FileView` so opening the overlay clears the icon.
+watches the read marker with a `FileView` so opening the window clears the icon.
 Stable 4.0.4 restarts the shell at the end of a successful update. Failed updates
 and updates over SSH or a TTY may need a manual re-check:
 
@@ -100,7 +103,7 @@ refresh or another shell restart. Reading that session records its ID; later
 changes to the same ID do not restore the icon in this release. Event-driven
 refresh and content fingerprints are reserved for a separately reviewed release.
 
-A current system reboot request appears in the overlay only. It never makes the
+A current system reboot request appears in the window only. It never makes the
 bar icon appear, even if the request came from an unrelated system action.
 
 ### If you would rather not have the icon
@@ -108,12 +111,12 @@ bar icon appear, even if the request came from an unrelated system action.
 Note that `omarchy plugin disable` turns off the **whole plugin**, not just the
 bar entry — the menu item stops working too. Omarchy enables a plugin by writing
 one entry, and for a plugin that declares `bar-widget` that entry goes into
-`bar.layout`, so removing it deregisters the overlay as well.
+`bar.layout`, so removing it deregisters the window as well.
 
 Before reaching for that: the icon is not permanent. It occupies zero width
 whenever there is nothing unread, which is nearly all of the time.
 
-If you do want the overlay without ever seeing the icon, move the plugin's entry
+If you do want the window without ever seeing the icon, move the plugin's entry
 in `~/.config/omarchy/shell.json` out of `bar.layout.right` and into the
 top-level `plugins` array:
 
@@ -123,11 +126,18 @@ top-level `plugins` array:
 ]
 ```
 
-Then `omarchy-restart-shell`. The overlay stays summonable from the menu and the
+Then `omarchy-restart-shell`. The window stays summonable from the menu and the
 widget is never instantiated — and with it goes both the icon and the `refresh`
 handler above, which that configuration no longer has anything to refresh.
 
 ## Keys
+
+The viewer is a normal desktop window: Omarchy handles tiling, moving, resizing
+and fullscreen. Stock bindings include `Super+W` to close, `Super+T` to toggle
+floating/tiling, and `Super+F` for fullscreen. Opening it from the menu or bar
+reuses the same viewer. The reading shortcuts below use unmodified keys.
+In short windows, the header and shortcut hints scroll with the content so
+everything stays reachable.
 
 | Key | Action |
 |---|---|
@@ -140,11 +150,25 @@ handler above, which that configuration no longer has anything to refresh.
 
 There is deliberately no key that starts an update.
 
+### Opening as a floating window
+
+Stock Omarchy opens the reader tiled. To prefer a centered floating window, add
+this optional rule to `~/.config/hypr/hyprland.lua` after the Omarchy defaults:
+
+```lua
+o.window({ class = "^org.quickshell$", title = "^What Changed$" }, { float = true, center = true })
+```
+
+The title is a stable rule target. Include it because other Quickshell windows
+share the same class. See the [Hyprland window-rule documentation](https://wiki.hypr.land/Configuring/Basics/Window-Rules/)
+for more options. The reader requests a consistent initial size when floating;
+browsing sessions preserves the size you choose.
+
 ---
 
 ## The CLI
 
-The overlay only ever runs `bin/what-changed` and renders its JSON. It stands
+The window only ever runs `bin/what-changed` and renders its JSON. It stands
 alone in a terminal — it is not on `PATH`, so alias it if you want it there:
 
 ```bash
@@ -199,7 +223,7 @@ with the same keyring step in `/var/log/pacman.log`, so the plugin rebuilds each
 update session from that log after the fact, including history from before you
 installed it.
 
-A few things are inferred rather than recorded, and the overlay says so:
+A few things are inferred rather than recorded, and the window says so:
 
 - **Packages a migration installed or removed** carry an `(inferred)` label.
   Omarchy's migration completion markers place them inside the update, but a
