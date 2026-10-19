@@ -112,11 +112,17 @@ the window cancels requests and releases the plugin Loader. Never quit the
 shared shell process to close the viewer. Modified keys pass through the reader
 without triggering its plain-letter actions.
 
+Tiling is the intended stock default. The window title is a stable rule target;
+the README includes an optional centered-floating rule. The preferred initial
+size is deliberately consistent rather than content-sized, so browsing thin
+and large sessions does not rearrange a window the user has sized.
+
 Minimum-size hints are independent of wrapping and capped to the screen. A
 short tile can still ignore them, so the viewer switches from a scrolling body
 to a scrolling whole page when the header, reboot line, footer and reading
 area no longer fit. Keyboard scrolling, including Page Up/Down, follows the
-active viewport. The footer lists the reader's Esc/q keys; desktop close
+active viewport. Entering whole-page mode explicitly clears the body's previous
+offset. The footer lists the reader's Esc/q keys; desktop close
 bindings remain the compositor's responsibility.
 
 `window.test.py` loads the real components offscreen, checks both views between
@@ -129,6 +135,9 @@ close/reopen without stopping the host. To repeat with display scaling,
 run `QT_SCALE_FACTOR=1.5 python3 test/window.test.py`. These checks use installed
 Omarchy Commons and Quickshell; they do not replace testing the real compositor's
 window shortcuts or multi-monitor behavior.
+`OMARCHY_PATH` selects the installation, defaulting to `/usr/share/omarchy`.
+If `qs` or Commons is unavailable, this suite prints `SKIP` and exits
+successfully; use an Omarchy host to run the actual acceptance checks.
 
 The CLI honours environment overrides, which is what makes it testable:
 

@@ -13,7 +13,16 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMONS = Path('/usr/share/omarchy/shell/Commons')
+COMMONS = Path(os.environ.get('OMARCHY_PATH') or '/usr/share/omarchy').expanduser() / 'shell/Commons'
+missing = []
+if shutil.which('qs') is None:
+    missing.append('Quickshell (qs) on PATH')
+if not (COMMONS / 'qmldir').is_file():
+    missing.append('Omarchy Commons at ' + str(COMMONS))
+if missing:
+    print('SKIP window.test.py: requires ' + ' and '.join(missing))
+    raise SystemExit(0)
+
 session = {
     'id': '20261019T051000Z', 'label': '19 Oct 07:10', 'channel': 'stable',
     'omarchy': {'from': '4.0.4-1', 'to': '4.0.5-1', 'jumped': True},

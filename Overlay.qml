@@ -360,6 +360,7 @@ Item {
   FloatingWindow {
     id: readingWindow
     objectName: "readingWindow"
+    // Public window-rule target; keep this title stable across releases.
     title: "What Changed"
     visible: root.opened
     color: root.background
@@ -394,6 +395,11 @@ Item {
       // whole page scrolls; otherwise only the reading area scrolls, leaving
       // session controls and hints in place.
       readonly property bool compactHeight: height < chromeHeight + Commons.Style.space(80)
+      onCompactHeightChanged: {
+        // The outer viewport owns the offset in whole-page mode. Do not rely
+        // on the nested Flickable fixing up its previous body-only offset.
+        if (compactHeight && body) body.contentY = 0
+      }
       interactive: compactHeight
       readonly property real maxScroll: Math.max(0, contentHeight - height)
       function scrollTo(y) { contentY = Math.max(0, Math.min(y, maxScroll)) }
@@ -412,6 +418,7 @@ Item {
         Keys.onPressed: function (event) {
           // Leave modified keys to the desktop rather than interpreting, for
           // example, Super+J as the reader's plain j scroll action.
+          // Keep Shift available for Backtab and bracket-key layouts.
           if (event.modifiers & (Qt.MetaModifier | Qt.ControlModifier | Qt.AltModifier)) {
             event.accepted = false
             return

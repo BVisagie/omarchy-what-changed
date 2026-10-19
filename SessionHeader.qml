@@ -36,15 +36,16 @@ Item {
   Flow {
     id: headline
     width: parent.width
-    spacing: Commons.Style.spacing.lg * 2
+    spacing: Commons.Style.spacing.lg
 
     Repeater {
       model: root.current ? Model.headerParts(root.current) : []
 
       delegate: Text {
         required property var modelData
+        required property int index
         width: Math.min(implicitWidth, headline.width)
-        text: modelData.text
+        text: (index > 0 ? "· " : "") + modelData.text
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: modelData.kind === "urgent" ? root.urgent : root.foreground

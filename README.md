@@ -147,6 +147,20 @@ everything stays reachable.
 
 There is deliberately no key that starts an update.
 
+### Opening as a floating window
+
+Stock Omarchy opens the reader tiled. To prefer a centered floating window, add
+this optional rule to `~/.config/hypr/hyprland.lua` after the Omarchy defaults:
+
+```lua
+o.window({ class = "^org.quickshell$", title = "^What Changed$" }, { float = true, center = true })
+```
+
+The title is a stable rule target. Include it because other Quickshell windows
+share the same class. See the [Hyprland window-rule documentation](https://wiki.hypr.land/Configuring/Basics/Window-Rules/)
+for more options. The reader requests a consistent initial size when floating;
+browsing sessions preserves the size you choose.
+
 ---
 
 ## The CLI
