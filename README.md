@@ -2,7 +2,10 @@
 
 **What actually changed after my Omarchy update?**
 
-![What Changed, showing the packages that landed in one update](preview.png)
+![This machine, showing recorded package changes in the desktop window](preview.png)
+
+The screenshots show the reader floating. Stock Omarchy opens it tiled; see
+[window controls and the optional floating rule](#keys).
 
 ---
 
@@ -34,7 +37,7 @@ The official Omarchy notes for **the exact version jump that session made** —
 not "latest on GitHub" — parsed into headings, bullets and paragraphs rather
 than dumped as raw Markdown.
 
-![The release notes for the version jump that session made](docs/img/notes.png)
+![Release notes for the recorded version jump in the desktop window](docs/img/notes.png)
 
 ---
 

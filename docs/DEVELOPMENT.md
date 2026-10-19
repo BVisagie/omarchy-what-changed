@@ -55,7 +55,7 @@ honest `unknown`.
 | `test/sessions.test.sh` | CLI tests against a fixture log. No network |
 | `test/model.test.js` | Intake, sanitising and formatting tests |
 | `test/accuracy.test.py` | Accuracy acceptance checks, including the minimized real 4.0.4 fixture |
-| `test/requests.test.js` | Overlay lifecycle checks with controlled callback ordering |
+| `test/requests.test.js` | Viewer lifecycle checks with controlled callback ordering |
 | `test/runtime.test.py` | Actual Quickshell cancellation and overlapping request checks, in an isolated offscreen shell |
 | `test/window.test.py` | Complete viewer: rendered bounds at narrow/wide sizes, larger fonts, scrolling and native close/reopen |
 | `test/fixtures/pacman.log` | A synthetic log: one full update, one thin one, plus manual pacman calls that must **not** be attributed |
@@ -181,3 +181,30 @@ To exercise the widget without waiting for a real update:
 ```
 
 The icon reacts within a second; the marker `FileView` does not need a restart.
+
+## Updating screenshots
+
+The README uses `preview.png` for This machine and `docs/img/notes.png` for
+Release notes. Capture the running viewer from the current checkout, using the
+same session, theme and window size for both views. The current pair was captured
+on 19 October 2026 with Omarchy 4.0.5 in a 900×620 logical-pixel floating window
+on a 1.6× display, including 2 logical pixels of compositor border on each side.
+Each PNG is 1446×998.
+
+Temporarily float and size the viewer, select This machine, and wait for its
+content to finish loading. Capture the window and its border:
+
+```bash
+what_changed_geometry=$(hyprctl clients -j | jq -r 'first(.[] | select(.class == "org.quickshell" and .title == "What Changed")) | "\(.at[0]-2),\(.at[1]-2) \(.size[0]+4)x\(.size[1]+4)"')
+grim -g "$what_changed_geometry" preview.png
+```
+
+Switch to Release notes, wait for the notes to finish loading, then capture the
+same geometry:
+
+```bash
+grim -g "$what_changed_geometry" docs/img/notes.png
+```
+
+Inspect both images for clipped text, stale loading states and matching session
+details. Restore the viewer's original window mode and size when finished.

@@ -108,7 +108,7 @@ session that upgraded `brave-origin-bin` and `ai-usagebar-bin` reports
 
 ## Omarchy integration points
 
-Compatibility evidence dated **1 October 2026**:
+Update reconstruction compatibility evidence dated **1 October 2026**:
 
 | Omarchy | Evidence and limits |
 |---|---|
@@ -116,8 +116,13 @@ Compatibility evidence dated **1 October 2026**:
 | `quattro` at `c05d901` | Inspected command forms (including optional `--`) and pinned manifest validator; early shell restart can leave the 1.1.0 widget stale until manual refresh |
 
 These are inspected snapshots, not a guarantee for future upstream changes.
-Full desktop interaction and multi-monitor checks remain pre-release checks.
-The integration points are:
+The normal-window viewer was also checked on **19 October 2026** with Omarchy
+4.0.5 and Quickshell 0.3.2 on one monitor. Repeat desktop interaction checks
+before publishing; multi-monitor placement remains unverified.
+
+The shell loads the viewer through its `overlay` entry point, while the actual
+surface is a normal `FloatingWindow`. Native window close and Esc/q all use the
+host's hide-and-unload lifecycle. The integration points are:
 
 | Depends on | Where | Used for |
 |---|---|---|
@@ -128,6 +133,6 @@ The integration points are:
 | The post-update hook fires before AUR/mise | `bin/omarchy-update` | Why there is no hook |
 | Migration markers are touched after success | `bin/omarchy-migrate` | Attributing migrations by mtime |
 | The menu merges a user JSONC extension | `shell/plugins/menu/Menu.qml` | The `Update › What changed` entry |
-| Third-party widgets receive `bar`, `moduleName`, `settings`, and `bar.shell` exposes `summon` | `shell/plugins/bar/Bar.qml`, `shell/Ui/PluginBarApi.qml` | The widget opening the overlay in-process |
+| Third-party widgets receive `bar`, `moduleName`, `settings`, and `bar.shell` exposes `summon` | `shell/plugins/bar/Bar.qml`, `shell/Ui/PluginBarApi.qml` | The widget opening the viewer in-process |
 | For a `bar-widget` plugin, "enabled" means placement in `bar.layout` | `shell/services/PluginRegistry.qml` | Why enabling needs `--section` |
-| The panel Loader injects `shell` and `manifest`, and the scoped `shell.hide` accepts the plugin's own id | `shell/shell.qml`, `shell/Ui/PluginShellApi.qml` | Dismissing the overlay unloads it, so `keepLoaded: false` keeps meaning something |
+| The panel Loader injects `shell` and `manifest`, and the scoped `shell.hide` accepts the plugin's own id | `shell/shell.qml`, `shell/services/PluginShellApi.qml` | Dismissing the viewer unloads it, so `keepLoaded: false` keeps meaning something |
