@@ -1,6 +1,5 @@
 import QtQuick
-import qs.Commons
-import qs.Ui
+import qs.Commons as Commons
 import "Model.js" as Model
 
 // The official release notes for the version jump this session made.
@@ -21,7 +20,7 @@ Column {
   property color foreground: "white"
   property string fontFamily: ""
 
-  spacing: Style.spacing.lg
+  spacing: Commons.Style.spacing.lg
 
   Text {
     visible: root.loading
@@ -30,7 +29,7 @@ Column {
     color: root.foreground
     opacity: 0.6
     font.family: root.fontFamily
-    font.pixelSize: Style.font.body
+    font.pixelSize: Commons.Style.font.body
   }
 
   // Nothing to show: no version change, offline, rate limited, or an edge
@@ -38,16 +37,16 @@ Column {
   Column {
     visible: !root.loading && root.notes && !root.notes.ok
     width: root.width
-    spacing: Style.spacing.sm
+    spacing: Commons.Style.spacing.sm
 
     Text {
       width: parent.width
       text: root.notes ? (root.notes.message || "Release notes are unavailable.") : ""
       textFormat: Text.PlainText
       color: root.foreground
-      wrapMode: Text.WordWrap
+      wrapMode: Text.Wrap
       font.family: root.fontFamily
-      font.pixelSize: Style.font.subtitle
+      font.pixelSize: Commons.Style.font.subtitle
     }
 
     Text {
@@ -57,9 +56,9 @@ Column {
       textFormat: Text.PlainText
       color: root.foreground
       opacity: 0.6
-      wrapMode: Text.WordWrap
+      wrapMode: Text.Wrap
       font.family: root.fontFamily
-      font.pixelSize: Style.font.body
+      font.pixelSize: Commons.Style.font.body
     }
 
     Text {
@@ -69,9 +68,9 @@ Column {
       textFormat: Text.PlainText
       color: root.foreground
       opacity: 0.6
-      wrapMode: Text.WordWrap
+      wrapMode: Text.Wrap
       font.family: root.fontFamily
-      font.pixelSize: Style.font.body
+      font.pixelSize: Commons.Style.font.body
     }
   }
 
@@ -82,14 +81,16 @@ Column {
       id: release
       required property var modelData
       width: root.width
-      spacing: Style.spacing.sm
+      spacing: Commons.Style.spacing.sm
 
       Text {
+        width: parent.width
         text: release.modelData.name || release.modelData.tag
         textFormat: Text.PlainText
+        wrapMode: Text.Wrap
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: Style.font.display
+        font.pixelSize: Commons.Style.font.display
       }
 
       Text {
@@ -99,9 +100,9 @@ Column {
         textFormat: Text.PlainText
         color: root.foreground
         opacity: 0.4
-        elide: Text.ElideRight
+        wrapMode: Text.Wrap
         font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Commons.Style.font.caption
       }
 
       Repeater {
@@ -118,31 +119,31 @@ Column {
           // apart. The spacing is the structure doing its job.
           readonly property int spaceAbove: {
             var t = block.modelData.type
-            if (t === "h1" || t === "h2") return Style.spacing.lg
-            if (t === "h3") return Style.spacing.md
-            if (t === "rule") return Style.spacing.md
-            return Style.spacing.xxs
+            if (t === "h1" || t === "h2") return Commons.Style.spacing.lg
+            if (t === "h3") return Commons.Style.spacing.md
+            if (t === "rule") return Commons.Style.spacing.md
+            return Commons.Style.spacing.xxs
           }
 
           Text {
             id: line
             y: block.spaceAbove
-            x: block.modelData.type === "li" ? Style.spacing.md : 0
+            x: block.modelData.type === "li" ? Commons.Style.spacing.md : 0
             width: parent.width - x
             visible: block.modelData.type !== "rule"
             text: block.modelData.type === "li"
               ? "•   " + block.modelData.text
               : block.modelData.text
             textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
+            wrapMode: Text.Wrap
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: {
               var t = block.modelData.type
-              if (t === "h1" || t === "h2") return Style.font.heading
-              if (t === "h3") return Style.font.subtitle
-              if (t === "code") return Style.font.bodySmall
-              return Style.font.body
+              if (t === "h1" || t === "h2") return Commons.Style.font.heading
+              if (t === "h3") return Commons.Style.font.subtitle
+              if (t === "code") return Commons.Style.font.bodySmall
+              return Commons.Style.font.body
             }
             opacity: {
               var t = block.modelData.type
@@ -177,8 +178,8 @@ Column {
     textFormat: Text.PlainText
     color: root.foreground
     opacity: 0.6
-    wrapMode: Text.WordWrap
+    wrapMode: Text.Wrap
     font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
+    font.pixelSize: Commons.Style.font.caption
   }
 }

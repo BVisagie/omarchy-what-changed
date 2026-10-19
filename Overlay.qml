@@ -1,9 +1,8 @@
 import Quickshell
 import Quickshell.Io
-import Quickshell.Wayland
 import QtQuick
-import qs.Commons
-import qs.Ui
+import QtQuick.Layouts
+import qs.Commons as Commons
 import "Model.js" as Model
 
 // What Changed — a reading surface for the update that just ran.
@@ -16,7 +15,7 @@ Item {
   id: root
 
   // Injected by the shell's panel Loader when it mounts this plugin. Without
-  // them a dismissal can only hide the card; the host still counts the plugin
+  // them a dismissal can only hide the window; the host still counts the plugin
   // as open and keeps the Loader mounted for the rest of the shell session.
   property var shell: null
   property var manifest: null
@@ -53,21 +52,14 @@ Item {
 
   // Shares the [menu] surface tokens, so a theme that styles the Omarchy menu
   // styles this too.
-  readonly property color background: Color.menu.background
-  readonly property color foreground: Color.menu.text
-  readonly property color borderColor: Color.menu.border
-  readonly property color scrim: Color.menu.scrim
-  readonly property color selectedBackground: Color.menu.selectedBackground
-  readonly property color selectedText: Color.menu.selectedText
-  readonly property var borderSpec:
-    Border.surfaceSpec("menu", "border", borderColor, Math.max(1, Style.space(2)))
+  readonly property color background: Commons.Color.menu.background
+  readonly property color foreground: Commons.Color.menu.text
+  readonly property color selectedBackground: Commons.Color.menu.selectedBackground
+  readonly property color selectedText: Commons.Color.menu.selectedText
 
-  readonly property string fontFamily: Style.font.menuFamily
-  readonly property int cornerRadius: Style.cornerRadius
-  readonly property int contentMargin: Style.spacing.panelPadding
-  readonly property int cardWidth: Math.min(Style.space(900), panel.width - Style.gapsOut * 2)
-  readonly property int maxCardHeight: Math.min(Style.space(620), panel.height - Style.gapsOut * 2)
-  readonly property int minCardHeight: Style.space(200)
+  readonly property string fontFamily: Commons.Style.font.menuFamily
+  readonly property int cornerRadius: Commons.Style.cornerRadius
+  readonly property int contentMargin: Commons.Style.spacing.panelPadding
 
   readonly property var currentSession:
     (sessionIndex >= 0 && sessionIndex < sessions.length) ? sessions[sessionIndex] : null
@@ -81,10 +73,15 @@ Item {
     root.applyPayload(payloadJson)
     root.reloadSessions()
     root.markRead()
-    Qt.callLater(function () { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function () {
+      if (!root.opened) return
+      readingWindow.minimized = false
+      keyCatcher.forceActiveFocus()
+      if (keyCatcher.Window.window) keyCatcher.Window.window.requestActivate()
+    })
   }
 
-  // Opening the overlay answers "anything since I last looked?", so it clears
+  // Opening the viewer answers "anything since I last looked?", so it clears
   // the whole backlog rather than only the session you happen to browse.
   function markRead() {
     markReadProc.running = false
@@ -95,7 +92,7 @@ Item {
   // into shell.hide(), which is what invoked it.
   function close() { root.opened = false; root.cancelRequests() }
 
-  // Every user-initiated dismissal — Esc, q, the scrim — goes through the host
+  // Every user-initiated dismissal — Esc, q, window close — goes through the host
   // so `keepLoaded: false` actually unloads us again.
   function dismiss() {
     if (root.shell && typeof root.shell.hide === "function")
@@ -360,48 +357,39 @@ Item {
 
   // ---------------------------------------------------------------- window
 
-  PanelWindow {
-    id: panel
+  FloatingWindow {
+    id: readingWindow
+    objectName: "readingWindow"
+    title: "What Changed"
     visible: root.opened
-    anchors { top: true; bottom: true; left: true; right: true }
-    color: "transparent"
-    WlrLayershell.namespace: "omarchy-what-changed"
-    WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
-    exclusionMode: ExclusionMode.Ignore
+    color: root.background
+    implicitWidth: Math.min(Commons.Style.space(900), screen ? screen.width - Commons.Style.gapsOut * 2 : Commons.Style.space(900))
+    implicitHeight: Math.min(Commons.Style.space(620), screen ? screen.height - Commons.Style.gapsOut * 2 : Commons.Style.space(620))
+    minimumSize: Qt.size(Commons.Style.space(360), root.contentMargin * 2 + chrome.height
+      + Commons.Style.spacing.lg + Commons.Style.space(80) + Commons.Style.spacing.md + footer.height
+      + (rebootRequest.visible ? rebootRequest.height + Commons.Style.spacing.sm : 0))
+    onClosed: root.dismiss()
 
-    Rectangle { anchors.fill: parent; color: root.scrim }
-
-    MouseArea { anchors.fill: parent; onClicked: root.dismiss() }
-
-    BorderSurface {
-      id: card
-      width: root.cardWidth
-
-      // Hug the content rather than always opening at full height: a session
-      // that only reinstalled the keyring should not read as a mostly empty
-      // panel. Long sessions clamp to the maximum and scroll inside it.
-      height: Math.max(root.minCardHeight, Math.min(root.maxCardHeight, contentHeight))
-      readonly property int contentHeight:
-        root.contentMargin * 2 + chrome.height + Style.spacing.lg
-        + content.height + Style.spacing.md + footer.height
-        + (rebootRequest.visible ? rebootRequest.implicitHeight + Style.spacing.sm : 0)
-
-      radius: root.cornerRadius
-      anchors.centerIn: parent
-      color: root.background
-      borderSpec: root.borderSpec
-
-      MouseArea { anchors.fill: parent; onClicked: {} }
+    // Hyprland owns the window's size, position, border and rounding. Content
+    // fills the actual size, including when tiled or fullscreen.
+    Item {
+      anchors.fill: parent
 
       Item {
         id: keyCatcher
+        objectName: "readingKeys"
         anchors.fill: parent
         anchors.margins: root.contentMargin
         focus: true
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function (event) {
+          // Leave modified keys to the desktop rather than interpreting, for
+          // example, Super+J as the reader's plain j scroll action.
+          if (event.modifiers & (Qt.MetaModifier | Qt.ControlModifier | Qt.AltModifier)) {
+            event.accepted = false
+            return
+          }
           if (event.key === Qt.Key_Escape || event.key === Qt.Key_Q) {
             root.dismiss(); event.accepted = true
           } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
@@ -413,9 +401,9 @@ Item {
           } else if (event.key === Qt.Key_O) {
             root.openCompare(); event.accepted = true
           } else if (event.key === Qt.Key_J || event.key === Qt.Key_Down) {
-            body.scrollBy(Style.space(60)); event.accepted = true
+            body.scrollBy(Commons.Style.space(60)); event.accepted = true
           } else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) {
-            body.scrollBy(-Style.space(60)); event.accepted = true
+            body.scrollBy(-Commons.Style.space(60)); event.accepted = true
           } else if (event.key === Qt.Key_PageDown) {
             body.scrollBy(body.height * 0.9); event.accepted = true
           } else if (event.key === Qt.Key_PageUp) {
@@ -431,29 +419,35 @@ Item {
 
         Column {
           id: chrome
+          objectName: "readingHeader"
           anchors { top: parent.top; left: parent.left; right: parent.right }
-          spacing: Style.spacing.md
+          spacing: Commons.Style.spacing.md
 
-          // Title row: name on the left, the two views on the right.
+          // Keep the tabs below the title when they no longer fit beside it.
           Item {
+            id: heading
             width: parent.width
-            height: Math.max(tabs.height, title.height)
+            readonly property bool stacked: title.implicitWidth + tabs.implicitWidth + Commons.Style.spacing.lg > width
+            height: stacked ? title.height + Commons.Style.spacing.sm + tabs.height : Math.max(tabs.height, title.height)
 
             Text {
               id: title
-              anchors.verticalCenter: parent.verticalCenter
+              width: Math.min(implicitWidth, parent.width)
+              y: heading.stacked ? 0 : (parent.height - height) / 2
               text: "What changed"
               textFormat: Text.PlainText
+              wrapMode: Text.Wrap
               color: root.foreground
               font.family: root.fontFamily
-              font.pixelSize: Style.font.heading
+              font.pixelSize: Commons.Style.font.heading
             }
 
-            Row {
+            RowLayout {
               id: tabs
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              spacing: Style.spacing.xs
+              width: heading.stacked ? parent.width : implicitWidth
+              x: heading.stacked ? 0 : parent.width - width
+              y: heading.stacked ? title.height + Commons.Style.spacing.sm : (parent.height - height) / 2
+              spacing: Commons.Style.spacing.xs
 
               Repeater {
                 model: [
@@ -464,20 +458,29 @@ Item {
                   id: tabChip
                   required property var modelData
                   readonly property bool active: root.tab === tabChip.modelData.id
-                  radius: Style.cornerRadius
+                  radius: Commons.Style.cornerRadius
                   color: active ? root.selectedBackground : "transparent"
-                  width: tabLabel.implicitWidth + Style.spacing.controlPaddingX * 2
-                  height: tabLabel.implicitHeight + Style.spacing.controlPaddingY * 2
+                  implicitWidth: tabLabel.implicitWidth + Commons.Style.spacing.controlPaddingX * 2
+                  implicitHeight: tabLabel.implicitHeight + Commons.Style.spacing.controlPaddingY * 2
+                  Layout.fillWidth: true
+                  Layout.minimumWidth: 0
 
                   Text {
                     id: tabLabel
-                    anchors.centerIn: parent
+                    anchors.fill: parent
+                    anchors.leftMargin: Commons.Style.spacing.controlPaddingX
+                    anchors.rightMargin: Commons.Style.spacing.controlPaddingX
+                    anchors.topMargin: Commons.Style.spacing.controlPaddingY
+                    anchors.bottomMargin: Commons.Style.spacing.controlPaddingY
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
                     text: tabChip.modelData.label
                     textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
                     color: tabChip.active ? root.selectedText : root.foreground
                     opacity: tabChip.active ? 1.0 : 0.65
                     font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
+                    font.pixelSize: Commons.Style.font.body
                   }
 
                   MouseArea {
@@ -509,32 +512,35 @@ Item {
 
         Text {
           id: rebootRequest
-          anchors { top: chrome.bottom; topMargin: Style.spacing.sm; left: parent.left; right: parent.right }
+          anchors { top: chrome.bottom; topMargin: Commons.Style.spacing.sm; left: parent.left; right: parent.right }
           visible: root.currentRebootRequest === "pending" || root.currentRebootRequest === "unknown"
           text: root.currentRebootRequest === "pending"
             ? "Current system reboot request: pending (may come from another system action)."
             : "Current system reboot request: applicability unknown."
           textFormat: Text.PlainText
           color: root.foreground
-          wrapMode: Text.WordWrap
+          wrapMode: Text.Wrap
           font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          font.pixelSize: Commons.Style.font.caption
         }
 
         // ------------------------------------------------------------ body
 
         Flickable {
           id: body
+          objectName: "readingBody"
           anchors {
-            top: rebootRequest.visible ? rebootRequest.bottom : chrome.bottom; topMargin: Style.spacing.lg
+            top: rebootRequest.visible ? rebootRequest.bottom : chrome.bottom; topMargin: Commons.Style.spacing.lg
             left: parent.left; right: parent.right
-            bottom: footer.top; bottomMargin: Style.spacing.md
+            bottom: footer.top; bottomMargin: Commons.Style.spacing.md
           }
           clip: true
           interactive: true
           contentWidth: width
           contentHeight: content.height
           boundsBehavior: Flickable.StopAtBounds
+          onHeightChanged: scrollTo(contentY)
+          onContentHeightChanged: scrollTo(contentY)
 
           readonly property real maxScroll: Math.max(0, contentHeight - height)
           function scrollBy(delta) { scrollTo(contentY + delta) }
@@ -588,7 +594,7 @@ Item {
         Component {
           id: loadingView
           Item {
-            implicitHeight: Style.space(80)
+            implicitHeight: Commons.Style.space(80)
             Text {
               anchors.centerIn: parent
               text: "Reading the update log…"
@@ -596,7 +602,7 @@ Item {
               color: root.foreground
               opacity: 0.6
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Commons.Style.font.body
             }
           }
         }
@@ -604,14 +610,16 @@ Item {
         Component {
           id: emptyView
           Column {
-            spacing: Style.spacing.md
+            spacing: Commons.Style.spacing.md
 
             Text {
+              width: content.width
               text: root.sessionsError || "No update sessions found."
               textFormat: Text.PlainText
+              wrapMode: Text.Wrap
               color: root.foreground
               font.family: root.fontFamily
-              font.pixelSize: Style.font.subtitle
+              font.pixelSize: Commons.Style.font.subtitle
             }
             Text {
               text: root.sessionsUnavailable
@@ -620,34 +628,41 @@ Item {
               textFormat: Text.PlainText
               color: root.foreground
               opacity: 0.6
-              wrapMode: Text.WordWrap
+              wrapMode: Text.Wrap
               width: content.width
               font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+              font.pixelSize: Commons.Style.font.body
             }
           }
         }
 
         // ---------------------------------------------------------- footer
 
-        Text {
+        Flow {
           id: footer
+          objectName: "readingFooter"
           anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+          spacing: Commons.Style.spacing.lg * 2
           // `o` only resolves a compare URL when the session actually jumped
           // versions, so it is only offered when it will do something.
           readonly property bool canCompare:
             !!(root.currentSession && root.currentSession.omarchy && root.currentSession.omarchy.jumped)
-          text: root.tab === "machine"
-            ? "Tab notes   ·   [ ] session   ·   j k scroll   ·   e expand   ·   Esc close"
-            : (footer.canCompare
-               ? "Tab machine   ·   [ ] session   ·   j k scroll   ·   o compare on GitHub   ·   Esc close"
-               : "Tab machine   ·   [ ] session   ·   j k scroll   ·   Esc close")
-          textFormat: Text.PlainText
-          color: root.foreground
-          opacity: 0.45
-          elide: Text.ElideRight
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          Repeater {
+            model: [root.tab === "machine" ? "Tab notes" : "Tab machine", "[ ] session", "j k scroll"]
+              .concat(root.tab === "machine" ? ["e expand"] : (footer.canCompare ? ["o compare on GitHub"] : []))
+              .concat(["Esc / Super+W close"])
+            delegate: Text {
+              required property string modelData
+              width: Math.min(implicitWidth, footer.width)
+              text: modelData
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              color: root.foreground
+              opacity: 0.45
+              font.family: root.fontFamily
+              font.pixelSize: Commons.Style.font.caption
+            }
+          }
         }
       }
     }

@@ -46,7 +46,7 @@ honest `unknown`.
 |---|---|
 | `bin/what-changed` | The whole read model. bash + jq + awk. Parses the log, groups, fetches notes, owns the read marker |
 | `Model.js` | Intake and formatting for QML. Sanitises CLI output, parses Markdown into blocks, formats headers and counts |
-| `Overlay.qml` | The summoned surface: tab state, keys, `Process` wiring, session navigation |
+| `Overlay.qml` | The summoned normal window: tab state, keys, `Process` wiring, session navigation |
 | `SessionHeader.qml` | The header line and the prev/next stepper |
 | `MachineView.qml` | Grouped package list. Renders what the CLI bucketed; decides nothing itself |
 | `NotesView.qml` | Release-note blocks |
@@ -57,6 +57,7 @@ honest `unknown`.
 | `test/accuracy.test.py` | Accuracy acceptance checks, including the minimized real 4.0.4 fixture |
 | `test/requests.test.js` | Overlay lifecycle checks with controlled callback ordering |
 | `test/runtime.test.py` | Actual Quickshell cancellation and overlapping request checks, in an isolated offscreen shell |
+| `test/window.test.py` | Complete viewer: rendered bounds at narrow/wide sizes, larger fonts, scrolling and native close/reopen |
 | `test/fixtures/pacman.log` | A synthetic log: one full update, one thin one, plus manual pacman calls that must **not** be attributed |
 | `docs/` | How it works, the CLI reference and this page |
 
@@ -84,6 +85,7 @@ node test/model.test.js      # intake, sanitising, Markdown blocks, formatting
 python3 test/accuracy.test.py # migration bounds, versions, exact counts, boot timing
 node test/requests.test.js   # superseded callbacks and both completion orders
 python3 test/runtime.test.py # isolated offscreen Quickshell request/cancellation acceptance
+python3 test/window.test.py  # rendered viewer against installed Omarchy Commons, using a fixture CLI
 omarchy plugin validate .
 /usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell *.qml
 ```
@@ -102,6 +104,21 @@ read the six-event real fixture. QML lint still reports import/type and
 unqualified-access warnings; static lint and this load check do not establish
 visual layout, menu/bar interaction, dismissal or multi-monitor behavior. Those
 checks remain required before publishing.
+
+The manifest's `overlay` entry point is retained for the shell's summon/hide
+contract; the actual surface is a standard `FloatingWindow`, managed by the
+compositor. Its `closed` signal uses the same host dismissal as Esc/q so closing
+the window cancels requests and releases the plugin Loader. Never quit the
+shared shell process to close the viewer. Modified keys pass through the reader
+without triggering its plain-letter actions.
+
+`window.test.py` loads the real components offscreen, checks both views between
+360 and 1100 logical pixels, and checks larger fonts, long version strings and
+unbroken release-note text. It also checks header collisions, scroll bounds and
+native close/reopen without stopping the host. To repeat with display scaling,
+run `QT_SCALE_FACTOR=1.5 python3 test/window.test.py`. These checks use installed
+Omarchy Commons and Quickshell; they do not replace testing the real compositor's
+window shortcuts or multi-monitor behavior.
 
 The CLI honours environment overrides, which is what makes it testable:
 

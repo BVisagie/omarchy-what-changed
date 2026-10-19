@@ -1,6 +1,5 @@
 import QtQuick
-import qs.Commons
-import qs.Ui
+import qs.Commons as Commons
 import "Model.js" as Model
 
 // Which update you are looking at: when it ran, the Omarchy jump it made, the
@@ -21,72 +20,58 @@ Item {
   property string olderLabel: ""
   property string newerLabel: ""
   property color foreground: "white"
-  property color urgent: Color.urgent
+  property color urgent: Commons.Color.urgent
   property string fontFamily: ""
 
   signal older()
   signal newer()
 
   readonly property var current: session ? session : fallbackSession
-  implicitHeight: Math.max(text.implicitHeight, nav.implicitHeight)
+  readonly property bool stackedNavigation:
+    counts.implicitWidth + Commons.Style.spacing.lg + nav.implicitWidth > width
+  implicitHeight: Math.max(counts.y + counts.height, nav.y + nav.height)
 
-  Column {
-    id: text
-    anchors { left: parent.left; right: nav.left; rightMargin: Style.spacing.lg }
-    spacing: Style.spacing.xxs
+  // Metadata uses the full width and wraps independently of navigation. A Row
+  // still paints beyond its width, which let long reboot text cover the arrows.
+  Flow {
+    id: headline
+    width: parent.width
+    spacing: Commons.Style.spacing.lg * 2
 
-    Row {
-      id: headline
-      width: parent.width
-      spacing: 0
+    Repeater {
+      model: root.current ? Model.headerParts(root.current) : []
 
-      Repeater {
-        model: root.current ? Model.headerParts(root.current) : []
-
-        delegate: Row {
-          id: part
-          required property var modelData
-          required property int index
-          spacing: 0
-
-          Text {
-            text: "  ·  "
-            textFormat: Text.PlainText
-            visible: part.index > 0
-            color: root.foreground
-            opacity: 0.35
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.subtitle
-          }
-
-          Text {
-            text: part.modelData.text
-            textFormat: Text.PlainText
-            color: part.modelData.kind === "urgent" ? root.urgent : root.foreground
-            opacity: part.modelData.kind === "urgent" ? 1.0 : 0.9
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.subtitle
-          }
-        }
+      delegate: Text {
+        required property var modelData
+        width: Math.min(implicitWidth, headline.width)
+        text: modelData.text
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: modelData.kind === "urgent" ? root.urgent : root.foreground
+        opacity: modelData.kind === "urgent" ? 1.0 : 0.9
+        font.family: root.fontFamily
+        font.pixelSize: Commons.Style.font.subtitle
       }
     }
+  }
 
-    Text {
-      width: parent.width
-      text: {
-        if (!root.current) return ""
-        var line = Model.countsText(root.current.counts)
-        if (root.current.incomplete)
-          line += "   ·   Unfinished package transaction."
-        return line
-      }
-      textFormat: Text.PlainText
-      color: root.foreground
-      opacity: root.current && root.current.incomplete ? 0.85 : 0.5
-      elide: Text.ElideRight
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+  Text {
+    id: counts
+    y: headline.height + Commons.Style.spacing.sm
+    width: root.stackedNavigation ? parent.width : Math.max(0, parent.width - nav.width - Commons.Style.spacing.lg)
+    text: {
+      if (!root.current) return ""
+      var line = Model.countsText(root.current.counts)
+      if (root.current.incomplete)
+        line += "   ·   Unfinished package transaction."
+      return line
     }
+    textFormat: Text.PlainText
+    wrapMode: Text.Wrap
+    color: root.foreground
+    opacity: root.current && root.current.incomplete ? 0.85 : 0.5
+    font.family: root.fontFamily
+    font.pixelSize: Commons.Style.font.caption
   }
 
   // Older sits left of newer, matching the way the list reads. Each arrow says
@@ -94,13 +79,14 @@ Item {
   Row {
     id: nav
     anchors.right: parent.right
-    anchors.verticalCenter: parent.verticalCenter
-    spacing: Style.spacing.md
+    y: root.stackedNavigation ? counts.y + counts.height + Commons.Style.spacing.sm : counts.y
+    spacing: Commons.Style.spacing.md
 
     NavStep {
       glyph: "⟨"
       label: root.olderLabel
       labelFirst: false
+      maximumWidth: Math.max(0, (root.width - position.implicitWidth - nav.spacing * 2) / 2)
       enabled: root.index < root.total - 1
       foreground: root.foreground
       fontFamily: root.fontFamily
@@ -108,19 +94,21 @@ Item {
     }
 
     Text {
+      id: position
       anchors.verticalCenter: parent.verticalCenter
       text: root.total > 0 ? (root.index + 1) + " / " + root.total : ""
       textFormat: Text.PlainText
       color: root.foreground
       opacity: 0.35
       font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
+      font.pixelSize: Commons.Style.font.caption
     }
 
     NavStep {
       glyph: "⟩"
       label: root.newerLabel
       labelFirst: true
+      maximumWidth: Math.max(0, (root.width - position.implicitWidth - nav.spacing * 2) / 2)
       enabled: root.index > 0
       foreground: root.foreground
       fontFamily: root.fontFamily
@@ -135,49 +123,44 @@ Item {
     property bool labelFirst: false
     property color foreground: "white"
     property string fontFamily: ""
+    property real maximumWidth: 0
     signal activated()
 
-    width: row.implicitWidth + Style.spacing.sm * 2
-    height: Style.space(24)
-    radius: Style.cornerRadius
+    width: row.implicitWidth + Commons.Style.spacing.sm * 2
+    height: Math.max(Commons.Style.space(24), row.implicitHeight + Commons.Style.spacing.xxs * 2)
+    radius: Commons.Style.cornerRadius
     color: hover.containsMouse && step.enabled ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
     opacity: step.enabled ? 1.0 : 0.25
 
     Row {
       id: row
       anchors.centerIn: parent
-      spacing: Style.spacing.xs
+      spacing: Commons.Style.spacing.xs
+      layoutDirection: step.labelFirst ? Qt.RightToLeft : Qt.LeftToRight
 
       Text {
-        visible: step.labelFirst && step.label !== ""
-        anchors.verticalCenter: parent.verticalCenter
-        text: step.label
-        textFormat: Text.PlainText
-        color: step.foreground
-        opacity: 0.5
-        font.family: step.fontFamily
-        font.pixelSize: Style.font.caption
-      }
-
-      Text {
+        id: glyph
         anchors.verticalCenter: parent.verticalCenter
         text: step.glyph
         textFormat: Text.PlainText
         color: step.foreground
         opacity: 0.8
         font.family: step.fontFamily
-        font.pixelSize: Style.font.body
+        font.pixelSize: Commons.Style.font.body
       }
 
       Text {
-        visible: !step.labelFirst && step.label !== ""
+        visible: step.label !== ""
         anchors.verticalCenter: parent.verticalCenter
+        width: Math.min(implicitWidth, Math.max(0,
+          step.maximumWidth - glyph.implicitWidth - row.spacing - Commons.Style.spacing.sm * 2))
         text: step.label
         textFormat: Text.PlainText
+        wrapMode: Text.Wrap
         color: step.foreground
         opacity: 0.5
         font.family: step.fontFamily
-        font.pixelSize: Style.font.caption
+        font.pixelSize: Commons.Style.font.caption
       }
     }
 
