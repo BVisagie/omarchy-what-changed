@@ -112,10 +112,20 @@ the window cancels requests and releases the plugin Loader. Never quit the
 shared shell process to close the viewer. Modified keys pass through the reader
 without triggering its plain-letter actions.
 
+Minimum-size hints are independent of wrapping and capped to the screen. A
+short tile can still ignore them, so the viewer switches from a scrolling body
+to a scrolling whole page when the header, reboot line, footer and reading
+area no longer fit. Keyboard scrolling, including Page Up/Down, follows the
+active viewport. The footer lists the reader's Esc/q keys; desktop close
+bindings remain the compositor's responsibility.
+
 `window.test.py` loads the real components offscreen, checks both views between
-360 and 1100 logical pixels, and checks larger fonts, long version strings and
-unbroken release-note text. It also checks header collisions, scroll bounds and
-native close/reopen without stopping the host. To repeat with display scaling,
+360 and 1100 logical pixels, including 360×220 tiles that bypass the backing
+window's size-hint enforcement as a tiling compositor can. It checks larger
+fonts with and without font-scaled spacing, screen-capped and wrap-independent
+minimum hints, long version strings and unbroken release-note text. It also
+checks header collisions, access to the footer, scroll/page bounds and native
+close/reopen without stopping the host. To repeat with display scaling,
 run `QT_SCALE_FACTOR=1.5 python3 test/window.test.py`. These checks use installed
 Omarchy Commons and Quickshell; they do not replace testing the real compositor's
 window shortcuts or multi-monitor behavior.

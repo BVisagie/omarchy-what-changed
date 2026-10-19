@@ -363,23 +363,49 @@ Item {
     title: "What Changed"
     visible: root.opened
     color: root.background
-    implicitWidth: Math.min(Commons.Style.space(900), screen ? screen.width - Commons.Style.gapsOut * 2 : Commons.Style.space(900))
-    implicitHeight: Math.min(Commons.Style.space(620), screen ? screen.height - Commons.Style.gapsOut * 2 : Commons.Style.space(620))
-    minimumSize: Qt.size(Commons.Style.space(360), root.contentMargin * 2 + chrome.height
-      + Commons.Style.spacing.lg + Commons.Style.space(80) + Commons.Style.spacing.md + footer.height
-      + (rebootRequest.visible ? rebootRequest.height + Commons.Style.spacing.sm : 0))
+    readonly property int availableWidth: Math.max(1,
+      (screen ? screen.width : Commons.Style.space(900)) - Commons.Style.gapsOut * 2)
+    readonly property int availableHeight: Math.max(1,
+      (screen ? screen.height : Commons.Style.space(620)) - Commons.Style.gapsOut * 2)
+    implicitWidth: Math.min(Commons.Style.space(900), availableWidth)
+    implicitHeight: Math.min(Commons.Style.space(620), availableHeight)
+    // Wrapping must not raise the minimum while the user narrows the window.
+    // Both hints fit the screen even with large font-scaled spacing.
+    minimumSize: Qt.size(Math.min(Commons.Style.space(360), availableWidth),
+      Math.min(Commons.Style.space(240), availableHeight))
     onClosed: root.dismiss()
 
     // Hyprland owns the window's size, position, border and rounding. Content
     // fills the actual size, including when tiled or fullscreen.
-    Item {
+    Flickable {
+      id: viewport
+      objectName: "readingViewport"
       anchors.fill: parent
+      anchors.margins: root.contentMargin
+      clip: true
+      contentWidth: width
+      contentHeight: keyCatcher.height
+      boundsBehavior: Flickable.StopAtBounds
+
+      readonly property real chromeHeight: chrome.height + Commons.Style.spacing.lg
+        + Commons.Style.spacing.md + footer.height
+        + (rebootRequest.visible ? rebootRequest.height + Commons.Style.spacing.sm : 0)
+      // Some compositors ignore size hints for tiles. In a short tile the
+      // whole page scrolls; otherwise only the reading area scrolls, leaving
+      // session controls and hints in place.
+      readonly property bool compactHeight: height < chromeHeight + Commons.Style.space(80)
+      interactive: compactHeight
+      readonly property real maxScroll: Math.max(0, contentHeight - height)
+      function scrollTo(y) { contentY = Math.max(0, Math.min(y, maxScroll)) }
+      onHeightChanged: scrollTo(contentY)
+      onContentHeightChanged: scrollTo(contentY)
 
       Item {
         id: keyCatcher
         objectName: "readingKeys"
-        anchors.fill: parent
-        anchors.margins: root.contentMargin
+        width: viewport.width
+        height: viewport.compactHeight
+          ? Math.max(viewport.height, viewport.chromeHeight + content.height) : viewport.height
         focus: true
 
         Keys.priority: Keys.BeforeItem
@@ -405,9 +431,9 @@ Item {
           } else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) {
             body.scrollBy(-Commons.Style.space(60)); event.accepted = true
           } else if (event.key === Qt.Key_PageDown) {
-            body.scrollBy(body.height * 0.9); event.accepted = true
+            body.scrollBy(body.pageHeight * 0.9); event.accepted = true
           } else if (event.key === Qt.Key_PageUp) {
-            body.scrollBy(-body.height * 0.9); event.accepted = true
+            body.scrollBy(-body.pageHeight * 0.9); event.accepted = true
           } else if (event.key === Qt.Key_Home) {
             body.scrollTo(0); event.accepted = true
           } else if (event.key === Qt.Key_End) {
@@ -535,16 +561,23 @@ Item {
             bottom: footer.top; bottomMargin: Commons.Style.spacing.md
           }
           clip: true
-          interactive: true
+          interactive: !viewport.compactHeight
           contentWidth: width
           contentHeight: content.height
           boundsBehavior: Flickable.StopAtBounds
           onHeightChanged: scrollTo(contentY)
           onContentHeightChanged: scrollTo(contentY)
 
-          readonly property real maxScroll: Math.max(0, contentHeight - height)
-          function scrollBy(delta) { scrollTo(contentY + delta) }
-          function scrollTo(y) { contentY = Math.max(0, Math.min(y, maxScroll)) }
+          readonly property real maxScroll: viewport.compactHeight
+            ? viewport.maxScroll : Math.max(0, contentHeight - height)
+          readonly property real pageHeight: viewport.compactHeight ? viewport.height : height
+          function scrollBy(delta) {
+            scrollTo((viewport.compactHeight ? viewport.contentY : contentY) + delta)
+          }
+          function scrollTo(y) {
+            if (viewport.compactHeight) viewport.scrollTo(y)
+            else contentY = Math.max(0, Math.min(y, maxScroll))
+          }
 
           Item {
             id: content
@@ -650,7 +683,7 @@ Item {
           Repeater {
             model: [root.tab === "machine" ? "Tab notes" : "Tab machine", "[ ] session", "j k scroll"]
               .concat(root.tab === "machine" ? ["e expand"] : (footer.canCompare ? ["o compare on GitHub"] : []))
-              .concat(["Esc / Super+W close"])
+              .concat(["Esc / q close"])
             delegate: Text {
               required property string modelData
               width: Math.min(implicitWidth, footer.width)

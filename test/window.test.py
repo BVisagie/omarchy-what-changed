@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the complete viewer against installed Omarchy components offscreen.
 
-Checks rendered text bounds, header collisions, scrolling and native close /
-reopen lifecycle. The CLI is a fixture; no desktop or plugin files are changed.
+Checks rendered bounds in wide/short tiles, font-scaled spacing, scrolling and
+native close/reopen. The CLI is a fixture; no desktop or plugin files are changed.
 """
 import json
 import os
@@ -48,11 +48,21 @@ ShellRoot {
   property int stage: 0
   property int sample: 0
   property var window: null
+  property var minimumByStyle: ({})
   property var cases: [
-    {width: 1100, tab: "machine"}, {width: 900, tab: "notes"},
-    {width: 600, tab: "machine"}, {width: 420, tab: "notes"},
-    {width: 360, tab: "machine"}, {width: 360, tab: "notes"},
-    {width: 360, tab: "machine", font: 18}, {width: 360, tab: "notes", font: 18}
+    {width: 360, height: 220, tab: "machine"},
+    {width: 1100, height: 850, tab: "machine"},
+    {width: 360, height: 220, tab: "machine"}, {width: 360, height: 220, tab: "notes"},
+    {width: 900, height: 850, tab: "notes"}, {width: 600, height: 850, tab: "machine"},
+    {width: 420, height: 850, tab: "notes"}, {width: 360, height: 850, tab: "machine"},
+    {width: 360, height: 850, tab: "notes"},
+    {width: 360, height: 850, tab: "machine", font: 18, scaleSpacing: false},
+    {width: 360, height: 850, tab: "notes", font: 18, scaleSpacing: false},
+    {width: 360, height: 220, tab: "machine", font: 18},
+    {width: 360, height: 220, tab: "notes", font: 18},
+    {width: 640, height: 850, tab: "notes", font: 18},
+    {width: 790, height: 790, tab: "machine", font: 48},
+    {width: 790, height: 790, tab: "notes", font: 48}
   ]
   Overlay {
     id: viewer
@@ -87,6 +97,7 @@ ShellRoot {
     var header = find(viewer, "readingHeader")
     var body = find(viewer, "readingBody")
     var footer = find(viewer, "readingFooter")
+    check(header.y + header.height <= footer.y, "header overlaps footer in a short tile")
     check(header.y + header.height <= body.y, "header overlaps body")
     check(body.height >= 79, "reading area remains usable")
     check(body.y + body.height <= footer.y, "body overlaps footer")
@@ -101,12 +112,51 @@ ShellRoot {
       var y = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
       check(x <= 1 || y <= 1, "header collision: " + a.text + " / " + b.text)
     }
+    var viewport = find(viewer, "readingViewport")
+    var scroll = viewport && viewport.compactHeight ? viewport : body
+    if (viewport && viewport.compactHeight)
+      check(Math.abs(body.contentY) < 1, "whole-page mode does not also offset the nested body")
+    check(scroll.clip && scroll.height > 0, "active scroller clips to a usable viewport")
     check(body.maxScroll > 0, "long content scrolls")
     body.scrollTo(body.maxScroll + 100)
-    check(Math.abs(body.contentY - body.maxScroll) < 1, "scroll clamps at bottom")
+    check(Math.abs(scroll.contentY - body.maxScroll) < 1, "scroll clamps at bottom")
+    var footerTexts = []
+    textRects(footer, window.contentItem, footerTexts)
+    check(footerTexts.some(function(t) { return t.text === "Esc / q close" }), "footer advertises the reader's close keys")
+    if (viewport && viewport.compactHeight) {
+      var p = footer.mapToItem(viewport, 0, 0)
+      check(p.y >= -1 && p.y + footer.height <= viewport.height + 1, "short tile can scroll to the whole footer")
+    }
     body.scrollTo(-100)
-    check(body.contentY === 0, "scroll clamps at top")
-    console.log("PASS " + viewer.tab + " width=" + window.width + " font=" + Commons.Style.fontBaseSize)
+    check(scroll.contentY === 0, "scroll clamps at top")
+    body.scrollBy(60)
+    check(scroll.contentY > 0, "reading shortcuts scroll the active viewport")
+    body.scrollTo(0)
+    check(Math.abs(body.pageHeight - scroll.height) < 1, "page keys use the visible scroll viewport")
+    body.scrollBy(body.pageHeight * 0.9)
+    check(scroll.contentY > 0 && scroll.contentY <= scroll.height, "page scroll advances at most one visible page")
+    // Leave a scroll offset so the next case also exercises mode changes
+    // while reading, including a wide-to-short resize without changing tabs.
+    body.scrollTo(Math.min(60, body.maxScroll))
+    var minimum = window.minimumSize
+    var style = Commons.Style.fontBaseSize + ":" + Commons.Style.spacingScaleWithFont
+    if (runner.minimumByStyle[style]) {
+      check(minimum.width === runner.minimumByStyle[style].width
+        && minimum.height === runner.minimumByStyle[style].height, "minimum size is independent of wrapping")
+    } else runner.minimumByStyle[style] = {width: minimum.width, height: minimum.height}
+    check(minimum.width > 0 && minimum.height > 0, "advertised size hints survive forced tile geometry")
+    check(minimum.width <= window.screen.width && minimum.height <= window.screen.height, "minimum fits the screen")
+    console.log("PASS " + viewer.tab + " size=" + window.width + "x" + window.height
+      + " font=" + Commons.Style.fontBaseSize + " scaledSpacing=" + Commons.Style.spacingScaleWithFont)
+  }
+  function resizeTile(c) {
+    // Tiled compositors may ignore size hints. Bypass only the backing Qt
+    // window's enforcement; keep the viewer's advertised minimum for checks.
+    var native = window.contentItem.Window.window
+    native.minimumWidth = 0
+    native.minimumHeight = 0
+    native.width = c.width
+    native.height = c.height
   }
   Component.onCompleted: viewer.open("{}")
   Timer {
@@ -116,18 +166,25 @@ ShellRoot {
       if (stage === 0) {
         window = find(viewer, "readingWindow")
         check(window !== null, "normal window loads")
-        Commons.Style.spacingScaleWithFont = false
         Commons.Style.spacingScale = 1
         stage = 1
       } else if (stage === 1) {
         var c = cases[sample]
         Commons.Style.fontBaseSize = c.font || 12
-        window.contentItem.Window.window.width = c.width
-        window.contentItem.Window.window.height = 850
+        Commons.Style.spacingScaleWithFont = c.scaleSpacing !== false
         viewer.setTab(c.tab)
         stage = 2
       } else if (stage === 2) {
+        resizeTile(cases[sample])
+        stage = 3
+      } else if (stage === 3) {
+        // Give width-dependent layout a frame to settle before enforcing the
+        // tile again, just as a compositor can override new size hints.
+        resizeTile(cases[sample])
+        stage = 4
+      } else if (stage === 4) {
         check(Math.abs(window.width - cases[sample].width) < 1, "requested width is exercised")
+        check(Math.abs(window.height - cases[sample].height) < 1, "requested height is exercised")
         check(viewer.background === Commons.Color.menu.background, "viewer uses the Omarchy palette")
         inspect()
         sample++
@@ -138,7 +195,7 @@ ShellRoot {
         check(Object.keys(viewer.requests).every(function(k) { return !viewer.requests[k] }), "close cancels requests")
         // The test runner must survive a reader close, as the real shell does.
         viewer.open("{}")
-        stage = 3
+        stage = 5
       } else {
         check(viewer.opened && window.visible && viewer.session, "viewer reopens after native close")
         viewer.dismiss()
@@ -176,7 +233,7 @@ if sys.argv[1] in responses:
     env.pop('WAYLAND_DISPLAY', None)
     try:
         result = subprocess.run(['qs', '--no-color', '-p', str(work / 'shell.qml')],
-                                env=env, capture_output=True, text=True, timeout=15)
+                                env=env, capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired as error:
         print((error.stdout or b'').decode() + (error.stderr or b'').decode())
         raise SystemExit('Quickshell window acceptance timed out') from error

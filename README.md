@@ -133,6 +133,8 @@ The viewer is a normal desktop window: Omarchy handles tiling, moving, resizing
 and fullscreen. Stock bindings include `Super+W` to close, `Super+T` to toggle
 floating/tiling, and `Super+F` for fullscreen. Opening it from the menu or bar
 reuses the same viewer. The reading shortcuts below use unmodified keys.
+In short windows, the header and shortcut hints scroll with the content so
+everything stays reachable.
 
 | Key | Action |
 |---|---|
