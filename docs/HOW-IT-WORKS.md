@@ -11,16 +11,29 @@ This is the part worth understanding, because it is what lets the plugin work
 with no hook and no capture step.
 
 Every `omarchy update` begins by running
-`pacman -Sy --noconfirm archlinux-keyring` (from `omarchy-update-keyring`), and
-that lands in `/var/log/pacman.log`. **That line is the head of a session.**
+`pacman -Sy --needed --noconfirm archlinux-keyring` (from
+`omarchy-update-keyring`), and that lands in `/var/log/pacman.log`.
+**That line is the head of a session**, even when `--needed` skips installing
+an already current keyring and no package transaction follows. Older invocations
+without `--needed` are also recognized. The parser accepts either order of
+`--needed` and `--noconfirm` and an optional `--` before the package name.
 The log order splits sessions at each such invocation. Recognized update
 commands are admitted within one hour of the last recognized activity; accepted
 commands extend that rolling window. Matching is heuristic: a manual command
 with the same shape can be indistinguishable from an update step.
 
+No-op attempts remain in the chronological session history. The bar, viewer's
+initial selection and CLI defaults prefer the newest session with package
+changes (`counts.total > 0`) or an incomplete transaction. A later attempt
+with neither does not replace that session or create an unread notification.
+The CLI supplies this selection as `defaultSessionId`; the viewer does not
+infer it from package counts. Explicit session IDs still open no-op attempts.
+If every session is a no-op, status stays quiet and a manually opened viewer
+shows the newest attempt.
+
 | Invocation | Recognition |
 |---|---|
-| `pacman -Sy --noconfirm archlinux-keyring` | Session start and update-keyring |
+| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring` | Session start and update-keyring; `--needed` may also follow `--noconfirm` |
 | `pacman -S --noconfirm --needed [--] omarchy-keyring` | First-run keyring install |
 | `pacman -Syu … --overwrite /usr/share/omarchy/*` | System package update |
 | `pacman -U … --config /etc/pacman.conf … /.cache/yay/…` or `/.cache/paru/…`, without `--needed` | AUR update |
@@ -116,6 +129,9 @@ Update reconstruction compatibility evidence dated **1 October 2026**:
 | `quattro` at `c05d901` | Inspected command forms (including optional `--`) and pinned manifest validator; early shell restart can leave the 1.1.0 widget stale until manual refresh |
 
 These are inspected snapshots, not a guarantee for future upstream changes.
+Session recognition was also checked on **20 October 2026** against the
+installed 4.0.6 updater and local pacman history spanning 4.0.5 to 4.0.6,
+including the new `--needed` keyring invocation and no-op update attempts.
 The normal-window viewer was also checked on **19 October 2026** with Omarchy
 4.0.5 and Quickshell 0.3.2 on one monitor. Repeat desktop interaction checks
 before publishing; multi-monitor placement remains unverified.
@@ -126,7 +142,7 @@ host's hide-and-unload lifecycle. The integration points are:
 
 | Depends on | Where | Used for |
 |---|---|---|
-| `pacman -Sy --noconfirm archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
+| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
 | Stable restarts near the end; inspected upstream restarts before later steps | `bin/omarchy-update-restart` | The widget refreshing without a poller |
 | The orphan sweep omits `--noconfirm` | `bin/omarchy-update-orphan-pkgs` | Telling the sweep apart from `omarchy pkg remove` |
 | The AUR step runs `yay -Sua`, never `--needed` | `bin/omarchy-update-aur-pkgs` | Telling it apart from `omarchy pkg aur add` |

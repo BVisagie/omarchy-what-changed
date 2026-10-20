@@ -182,13 +182,24 @@ function parseSessions(jsonText) {
   if (!raw || !Array.isArray(raw.sessions))
     return { ok: false, sessions: [], error: "Could not read the session list." }
   var out = []
+  var defaultId = text(raw.defaultSessionId, MAX_SHORT)
   for (var i = 0; i < raw.sessions.length && out.length < MAX_SESSIONS; i++) {
     var s = intakeSession(raw.sessions[i])
     if (s) out.push(s)
   }
+  // Retain the CLI's default even after many newer no-op attempts, while
+  // keeping the bounded history in its original order.
+  if (defaultId && !out.some(function (s) { return s.id === defaultId }))
+    for (; i < raw.sessions.length; i++) {
+      if (!raw.sessions[i] || raw.sessions[i].id !== defaultId) continue
+      var selected = intakeSession(raw.sessions[i])
+      if (selected) out[out.length - 1] = selected
+      break
+    }
   if (out.length === 0)
     return { ok: false, sessions: [], error: "No update sessions found." }
-  return { ok: true, sessions: out, error: "", currentRebootRequest: rebootRequest(raw.currentRebootRequest) }
+  return { ok: true, sessions: out, defaultSessionId: defaultId, error: "",
+           currentRebootRequest: rebootRequest(raw.currentRebootRequest) }
 }
 
 function parseShow(jsonText) {

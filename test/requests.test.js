@@ -127,4 +127,25 @@ root.step(1)
 root.openCompare()
 root.loadNotes()
 check('empty-history actions cannot launch invalid requests', () => assert.equal(launches.length, emptyLaunchCount))
+
+const history = {defaultSessionId: 'update', sessions: [{id: 'noop'}, {id: 'update'}, {id: 'older'}]}
+root.onSessionsRead(JSON.stringify(history))
+check('viewer opens the CLI default behind a newer no-op attempt', () => {
+  assert.equal(root.currentSession.id, 'update')
+  assert.equal(root.requests.show.identity.sessionId, 'update')
+  assert.equal(root.requests.notes.identity.sessionId, 'update')
+})
+root.step(-1)
+check('newer no-op attempts remain reachable in history', () => assert.equal(root.currentSession.id, 'noop'))
+root.requestedSessionId = 'noop'
+root.onSessionsRead(JSON.stringify(history))
+check('an explicit no-op selection overrides the default', () => assert.equal(root.currentSession.id, 'noop'))
+root.requestedSessionId = 'missing'
+root.onSessionsRead(JSON.stringify(history))
+check('an unknown requested ID falls back to the CLI default', () => assert.equal(root.currentSession.id, 'update'))
+root.onSessionsRead(JSON.stringify({defaultSessionId: null, sessions: [{id: 'noop'}]}))
+check('all-no-op history remains viewable', () => assert.equal(root.currentSession.id, 'noop'))
+root.onSessionsRead(JSON.stringify({sessions: [{id: 'legacy'}]}))
+check('older CLI payloads still open the newest session', () => assert.equal(root.currentSession.id, 'legacy'))
+root.cancelRequests()
 console.log(pass + ' passed, 0 failed')

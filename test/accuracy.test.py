@@ -82,6 +82,131 @@ class Accuracy(unittest.TestCase):
     def show(self):
         return self.cli('show', '--expand', 'other')
 
+    def test_keyring_start_formats_and_unread_status(self):
+        commands = [KEYRING, 'pacman -Sy --needed --noconfirm archlinux-keyring',
+                    'pacman -Sy --noconfirm --needed archlinux-keyring']
+        for argv in commands + [c.replace(' archlinux-keyring', ' -- archlinux-keyring') for c in commands]:
+            for keyring_changed in (False, True):
+                with self.subTest(argv=argv, keyring_changed=keyring_changed):
+                    self.log.write_text(update())
+                    self.cli('mark-read', json_output=False)
+                    previous = self.cli('status')
+                    self.assertFalse(previous['unread'])
+                    # Start outside the older session's rolling window. With
+                    # --needed the keyring can log no transaction at all.
+                    keyring = (transaction(5000, argv, ['upgraded archlinux-keyring (1 -> 2)'])
+                               if keyring_changed else command(5000, argv))
+                    with self.log.open('a') as log:
+                        log.write(keyring + transaction(5002, SYSTEM, ['upgraded omarchy (4.0.4-1 -> 4.0.6-1)']))
+                    sessions = self.cli('sessions')['sessions']
+                    self.assertEqual(len(sessions), 2)
+                    self.assertEqual(sessions[1], previous['newest'] | {'isLatest': False})
+                    latest = sessions[0]
+                    self.assertEqual(latest['startedAt'], stamp(5000))
+                    self.assertEqual(latest['counts']['total'], 2 if keyring_changed else 1)
+                    self.assertEqual(latest['nearbyCounts']['total'], 0)
+                    self.assertEqual(latest['omarchy']['from'], '4.0.4-1')
+                    self.assertEqual(latest['omarchy']['to'], '4.0.6-1')
+                    self.assertTrue(latest['omarchy']['jumped'])
+                    status = self.cli('status')
+                    self.assertEqual(status['newest']['id'], latest['id'])
+                    self.assertEqual(status['lastRead'], previous['newest']['id'])
+                    self.assertTrue(status['unread'])
+                    if keyring_changed:
+                        row = next(r for r in rows(self.show()) if r['name'] == 'archlinux-keyring')
+                        self.assertEqual(row['attribution'], 'update-command')
+                    self.cli('mark-read', json_output=False)
+                    self.assertFalse(self.cli('status')['unread'])
+
+    def test_needed_keyring_noop_sessions(self):
+        argv = 'pacman -Sy --needed --noconfirm archlinux-keyring'
+        self.log.write_text(command(0, argv) + command(1, SYSTEM))
+        first = self.cli('status')
+        self.assertFalse(first['unread'])
+        self.assertIsNone(first['newest'])
+        with self.log.open('a') as log:
+            log.write(command(5000, argv) + command(5001, SYSTEM))
+        history = self.cli('sessions')
+        self.assertEqual(len(history['sessions']), 2)
+        self.assertIsNone(history['defaultSessionId'])
+        latest = self.cli('status')
+        self.assertFalse(latest['unread'])
+        self.assertIsNone(latest['newest'])
+        # Direct viewing still works when the entire history is no-ops.
+        self.assertEqual(self.show()['session']['startedAt'], stamp(5000))
+        self.assertEqual(self.show()['session']['counts']['total'], 0)
+        self.assertFalse(self.show()['session']['incomplete'])
+        self.cli('mark-read', json_output=False)
+        self.assertFalse((self.root / 'read/last-read').exists())
+
+    def test_noop_rerun_preserves_default_update_and_unread(self):
+        argv = 'pacman -Sy --needed --noconfirm archlinux-keyring'
+        self.log.write_text(update())
+        original = self.cli('sessions')['sessions'][0]
+        self.cli('mark-read', '20260916', json_output=False)
+        with self.log.open('a') as log:
+            log.write(command(5000, argv) + transaction(5001, SYSTEM, ['upgraded omarchy (4.0.4-1 -> 4.0.6-1)'])
+                      + command(5010, argv) + command(5011, SYSTEM))
+        history = self.cli('sessions')
+        self.assertEqual(len(history['sessions']), 3)
+        real_update = history['sessions'][1]
+        noop = history['sessions'][0]
+        self.assertEqual(real_update['counts']['total'], 1)
+        self.assertEqual(noop['counts']['total'], 0)
+        self.assertEqual(history['defaultSessionId'], real_update['id'])
+        status = self.cli('status')
+        self.assertTrue(status['unread'])
+        self.assertEqual(status['newest'], real_update)
+        self.assertEqual(status['lastRead'], original['id'])
+        self.assertEqual(self.show()['session']['id'], real_update['id'])
+        self.assertEqual(self.cli('show', 'latest')['session']['id'], real_update['id'])
+        self.assertEqual(self.cli('compare-url', json_output=False).strip(),
+                         'https://github.com/omacom/omarchy/compare/v4.0.4...v4.0.6')
+        self.assertEqual(self.cli('notes')['session']['id'], real_update['id'])
+        self.assertEqual(self.cli('show', noop['id'])['session']['id'], noop['id'])
+        self.cli('mark-read', json_output=False)
+        self.assertEqual(self.cli('status')['lastRead'], real_update['id'])
+        self.assertFalse(self.cli('status')['unread'])
+        with self.log.open('a') as log:
+            log.write(command(6000, argv) + command(6001, SYSTEM))
+        self.assertFalse(self.cli('status')['unread'])
+        self.assertEqual(self.show()['session']['id'], real_update['id'])
+
+    def test_empty_incomplete_transaction_remains_default(self):
+        argv = 'pacman -Sy --needed --noconfirm archlinux-keyring'
+        for failed in (argv, SYSTEM):
+            with self.subTest(failed=failed):
+                self.log.write_text(update())
+                self.cli('mark-read', json_output=False)
+                with self.log.open('a') as log:
+                    log.write(command(5000, argv)
+                              + (command(5001, SYSTEM) if failed == SYSTEM else '')
+                              + alpm(5001, 'transaction started')
+                              + command(6000, argv) + command(6001, SYSTEM))
+                history = self.cli('sessions')
+                failed_session = history['sessions'][1]
+                self.assertTrue(failed_session['incomplete'])
+                self.assertEqual(failed_session['counts']['total'], 0)
+                self.assertEqual(history['defaultSessionId'], failed_session['id'])
+                self.assertEqual(self.show()['session']['id'], failed_session['id'])
+                status = self.cli('status')
+                self.assertTrue(status['unread'])
+                self.assertEqual(status['newest'], failed_session)
+                self.cli('mark-read', json_output=False)
+                self.assertFalse(self.cli('status')['unread'])
+
+    def test_keyring_like_commands_do_not_start_sessions(self):
+        for argv in ['pacman -Sy --needed --noconfirm omarchy-keyring',
+                     'pacman -S --needed --noconfirm archlinux-keyring',
+                     'pacman -Sy --needed archlinux-keyring',
+                     'pacman -Sy --needed --noconfirm archlinux-keyring-extra',
+                     'pacman -Sy --needed --noconfirm archlinux-keyring extra']:
+            with self.subTest(argv=argv):
+                self.log.write_text(update() + transaction(5000, argv, ['installed extra (1)']))
+                sessions = self.cli('sessions')['sessions']
+                self.assertEqual(len(sessions), 1)
+                self.assertEqual(sessions[0]['counts']['total'], 2)
+
     def test_real_404_migration_and_boot(self):
         self.log.write_text((ROOT / 'test/fixtures/update-4.0.4.log').read_text())
         self.marker(22)  # 07:57:41 local

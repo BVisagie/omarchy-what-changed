@@ -2,9 +2,10 @@
 # what-changed — what actually landed on this machine after `omarchy update`.
 #
 # Sessions come out of /var/log/pacman.log. omarchy-update-keyring always runs
-# `pacman -Sy --noconfirm archlinux-keyring`, so that invocation marks the head
-# of every `omarchy update`. Everything up to the next one is a single session,
-# however many pacman transactions it took. Recognition and completion-marker
+# `pacman -Sy --needed --noconfirm archlinux-keyring` (older versions omit
+# --needed), so that invocation marks the head of every `omarchy update`.
+# Everything up to the next one is a single session, however many pacman
+# transactions it took. Recognition and completion-marker
 # inference below distinguish primary changes from uncertain nearby activity.
 
 set -euo pipefail
@@ -59,8 +60,8 @@ Commands:
   show [id]             What landed on this machine (default command)
   notes [id]            Omarchy release notes for that session's version jump
   compare-url [id]      Print the GitHub compare URL for the version jump
-  status                Newest session, and whether it has been read yet
-  mark-read [id]        Record a session as read (default: the newest)
+  status                Latest changes or incomplete transaction, and read state
+  mark-read [id]        Record a session as read (default: the status session)
 
 Options:
   --json                Machine-readable output
@@ -110,11 +111,17 @@ parse_log() {
       return sign == "-" ? e + off : e - off
     }
 
+    # Share the start marker with ownership recognition. --needed can skip
+    # the keyring transaction entirely; the invocation still starts a session.
+    function is_session_start(c) {
+      return c ~ /^pacman -Sy (--noconfirm|--needed --noconfirm|--noconfirm --needed) (-- )?archlinux-keyring$/
+    }
+
     # Recognition admits only known update commands to the rolling window.
     # All other transactions are recorded first, then bounded and attributed
     # using completion markers. A nearby command never extends ownership.
     function is_update_cmd(c) {
-      if (c == "pacman -Sy --noconfirm archlinux-keyring") return 1              # update-keyring
+      if (is_session_start(c)) return 1                                      # update-keyring
       if (c ~ /^pacman -S --noconfirm --needed (-- )?omarchy-keyring$/) return 1        # update-keyring, first run
       if (index(c, "pacman -Syu ") == 1 &&
           index(c, "--overwrite /usr/share/omarchy/*") > 0) return 1             # update-system-pkgs
@@ -195,7 +202,7 @@ parse_log() {
     cat == "PACMAN" && substr(rest, 1, 8) == "Running " {
       cmd = substr(rest, 9)
       if (length(cmd) >= 2) cmd = substr(cmd, 2, length(cmd) - 2)
-      if (cmd == "pacman -Sy --noconfirm archlinux-keyring") reset_session(ts)
+      if (is_session_start(cmd)) reset_session(ts)
       else flush_command()
       if (!started) next
       e = epoch_of(ts)
@@ -454,7 +461,11 @@ enrich_sessions() {
            jumped: supportedJump(($v.from // $v.version); $v.version),
            jump: (if supportedJump(($v.from // $v.version); $v.version)
                   then "\($v.from) → \($v.version)" else null end)}})
-  | {schemaVersion: $schema, sessions: reverse,
+  | reverse as $sessions
+  # Keep no-op attempts in history without letting them displace changes or
+  # unfinished transactions in the bar, viewer, or CLI defaults.
+  | (first($sessions[] | select(.counts.total > 0 or .incomplete)) // null) as $default
+  | {schemaVersion: $schema, sessions: $sessions, defaultSessionId: $default.id,
      currentRebootRequest: (if $markerExists | not then "absent"
        elif $boot == null or $marker == null or $marker == $boot then "unknown"
        elif $marker < $boot then "stale" else "pending" end)}
@@ -776,6 +787,7 @@ CMD=${CMD:-show}
 
 ALL=$(enrich_sessions)
 SESSION_COUNT=$(jq '.sessions | length' <<<"$ALL")
+DEFAULT_SESSION=$(jq -c '.defaultSessionId as $id | first(.sessions[] | select(.id == $id)) // null' <<<"$ALL")
 
 # `status` is what the bar widget asks on a machine that may never have been
 # updated, so it answers for an empty history instead of failing.
@@ -783,12 +795,13 @@ if (( SESSION_COUNT == 0 )) && [[ $CMD != status ]]; then
   die_no_sessions "no update sessions found in $PACMAN_LOG"
 fi
 
-# Newest by default. Otherwise a full id or a prefix; where a prefix matches
-# more than one session the newest wins, which is what `show 2026` should mean.
+# Prefer the newest changes or incomplete transaction. An all-no-op history is
+# still viewable. Explicit ids/prefixes include no-ops; newest prefix match wins.
 pick_session() {
   local want="$1"
   if [[ -z $want || $want == latest ]]; then
-    jq -c '.sessions[0]' <<<"$ALL"
+    if [[ $DEFAULT_SESSION != null ]]; then printf '%s\n' "$DEFAULT_SESSION"
+    else jq -c '.sessions[0]' <<<"$ALL"; fi
     return
   fi
   local hits
@@ -802,6 +815,7 @@ case "$CMD" in
     if (( JSON )); then
       emit "$(jq -c '{ schemaVersion: .schemaVersion,
                        currentRebootRequest: .currentRebootRequest,
+                       defaultSessionId: .defaultSessionId,
                        sessions: [ .sessions[] | del(.events, .groupCounts) ] }' <<<"$ALL")"
     else
       render_sessions_text <<<"$ALL"
@@ -849,7 +863,7 @@ case "$CMD" in
     ;;
 
   status)
-    newest=$(jq -c 'if (.sessions | length) > 0 then .sessions[0] else null end' <<<"$ALL")
+    newest=$DEFAULT_SESSION
     newest_id=$(jq -r 'if . == null then "" else .id end' <<<"$newest")
     # Absent and unreadable are different answers. No marker means this is the
     # first run, and sessions that predate the install are not news, so adopt
@@ -880,7 +894,8 @@ case "$CMD" in
     if (( JSON )); then
       emit "$out"
     elif [[ $newest_id == "" ]]; then
-      echo "No update sessions yet."
+      if (( SESSION_COUNT > 0 )); then echo "No package changes or incomplete transactions recorded."
+      else echo "No update sessions yet."; fi
     elif [[ $unread == true ]]; then
       jq -r '"Unread: \(.newest.label)  \(.newest.omarchy.to)"' <<<"$out"
     else
@@ -892,8 +907,10 @@ case "$CMD" in
     # Idempotent, and never the reason a caller fails: the overlay runs this on
     # every open and must not care whether state is writable.
     if (( SESSION_COUNT > 0 )); then
-      target=$(jq -r '.id' <<<"$(pick_session "$SESSION_ARG")")
-      write_marker "$target" || true
+      if [[ -z $SESSION_ARG || $SESSION_ARG == latest ]]; then
+        target=$(jq -r '.id // empty' <<<"$DEFAULT_SESSION")
+      else target=$(jq -r '.id' <<<"$(pick_session "$SESSION_ARG")"); fi
+      if [[ -n $target ]]; then write_marker "$target" || true; fi
     fi
     exit 0
     ;;
