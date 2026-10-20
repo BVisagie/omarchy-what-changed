@@ -2,9 +2,10 @@
 # what-changed — what actually landed on this machine after `omarchy update`.
 #
 # Sessions come out of /var/log/pacman.log. omarchy-update-keyring always runs
-# `pacman -Sy --noconfirm archlinux-keyring`, so that invocation marks the head
-# of every `omarchy update`. Everything up to the next one is a single session,
-# however many pacman transactions it took. Recognition and completion-marker
+# `pacman -Sy --needed --noconfirm archlinux-keyring` (older versions omit
+# --needed), so that invocation marks the head of every `omarchy update`.
+# Everything up to the next one is a single session, however many pacman
+# transactions it took. Recognition and completion-marker
 # inference below distinguish primary changes from uncertain nearby activity.
 
 set -euo pipefail
@@ -110,11 +111,17 @@ parse_log() {
       return sign == "-" ? e + off : e - off
     }
 
+    # Share the start marker with ownership recognition. --needed can skip
+    # the keyring transaction entirely; the invocation still starts a session.
+    function is_session_start(c) {
+      return c ~ /^pacman -Sy (--noconfirm|--needed --noconfirm|--noconfirm --needed) (-- )?archlinux-keyring$/
+    }
+
     # Recognition admits only known update commands to the rolling window.
     # All other transactions are recorded first, then bounded and attributed
     # using completion markers. A nearby command never extends ownership.
     function is_update_cmd(c) {
-      if (c == "pacman -Sy --noconfirm archlinux-keyring") return 1              # update-keyring
+      if (is_session_start(c)) return 1                                      # update-keyring
       if (c ~ /^pacman -S --noconfirm --needed (-- )?omarchy-keyring$/) return 1        # update-keyring, first run
       if (index(c, "pacman -Syu ") == 1 &&
           index(c, "--overwrite /usr/share/omarchy/*") > 0) return 1             # update-system-pkgs
@@ -195,7 +202,7 @@ parse_log() {
     cat == "PACMAN" && substr(rest, 1, 8) == "Running " {
       cmd = substr(rest, 9)
       if (length(cmd) >= 2) cmd = substr(cmd, 2, length(cmd) - 2)
-      if (cmd == "pacman -Sy --noconfirm archlinux-keyring") reset_session(ts)
+      if (is_session_start(cmd)) reset_session(ts)
       else flush_command()
       if (!started) next
       e = epoch_of(ts)

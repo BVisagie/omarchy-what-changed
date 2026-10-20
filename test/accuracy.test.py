@@ -82,6 +82,71 @@ class Accuracy(unittest.TestCase):
     def show(self):
         return self.cli('show', '--expand', 'other')
 
+    def test_keyring_start_formats_and_unread_status(self):
+        commands = [KEYRING, 'pacman -Sy --needed --noconfirm archlinux-keyring',
+                    'pacman -Sy --noconfirm --needed archlinux-keyring']
+        for argv in commands + [c.replace(' archlinux-keyring', ' -- archlinux-keyring') for c in commands]:
+            for keyring_changed in (False, True):
+                with self.subTest(argv=argv, keyring_changed=keyring_changed):
+                    self.log.write_text(update())
+                    self.cli('mark-read', json_output=False)
+                    previous = self.cli('status')
+                    self.assertFalse(previous['unread'])
+                    # Start outside the older session's rolling window. With
+                    # --needed the keyring can log no transaction at all.
+                    keyring = (transaction(5000, argv, ['upgraded archlinux-keyring (1 -> 2)'])
+                               if keyring_changed else command(5000, argv))
+                    with self.log.open('a') as log:
+                        log.write(keyring + transaction(5002, SYSTEM, ['upgraded omarchy (4.0.4-1 -> 4.0.6-1)']))
+                    sessions = self.cli('sessions')['sessions']
+                    self.assertEqual(len(sessions), 2)
+                    self.assertEqual(sessions[1], previous['newest'] | {'isLatest': False})
+                    latest = sessions[0]
+                    self.assertEqual(latest['startedAt'], stamp(5000))
+                    self.assertEqual(latest['counts']['total'], 2 if keyring_changed else 1)
+                    self.assertEqual(latest['nearbyCounts']['total'], 0)
+                    self.assertEqual(latest['omarchy']['from'], '4.0.4-1')
+                    self.assertEqual(latest['omarchy']['to'], '4.0.6-1')
+                    self.assertTrue(latest['omarchy']['jumped'])
+                    status = self.cli('status')
+                    self.assertEqual(status['newest']['id'], latest['id'])
+                    self.assertEqual(status['lastRead'], previous['newest']['id'])
+                    self.assertTrue(status['unread'])
+                    if keyring_changed:
+                        row = next(r for r in rows(self.show()) if r['name'] == 'archlinux-keyring')
+                        self.assertEqual(row['attribution'], 'update-command')
+                    self.cli('mark-read', json_output=False)
+                    self.assertFalse(self.cli('status')['unread'])
+
+    def test_needed_keyring_noop_sessions(self):
+        argv = 'pacman -Sy --needed --noconfirm archlinux-keyring'
+        self.log.write_text(command(0, argv) + command(1, SYSTEM))
+        first = self.cli('status')
+        self.assertFalse(first['unread'])
+        self.assertIsNotNone(first['newest'])
+        self.assertEqual(first['newest']['counts']['total'], 0)
+        self.assertFalse(first['newest']['incomplete'])
+        with self.log.open('a') as log:
+            log.write(command(5000, argv) + command(5001, SYSTEM))
+        self.assertEqual(len(self.cli('sessions')['sessions']), 2)
+        latest = self.cli('status')
+        self.assertTrue(latest['unread'])
+        self.assertEqual(latest['newest']['startedAt'], stamp(5000))
+        self.assertEqual(latest['newest']['counts']['total'], 0)
+        self.assertFalse(latest['newest']['incomplete'])
+
+    def test_keyring_like_commands_do_not_start_sessions(self):
+        for argv in ['pacman -Sy --needed --noconfirm omarchy-keyring',
+                     'pacman -S --needed --noconfirm archlinux-keyring',
+                     'pacman -Sy --needed archlinux-keyring',
+                     'pacman -Sy --needed --noconfirm archlinux-keyring-extra',
+                     'pacman -Sy --needed --noconfirm archlinux-keyring extra']:
+            with self.subTest(argv=argv):
+                self.log.write_text(update() + transaction(5000, argv, ['installed extra (1)']))
+                sessions = self.cli('sessions')['sessions']
+                self.assertEqual(len(sessions), 1)
+                self.assertEqual(sessions[0]['counts']['total'], 2)
+
     def test_real_404_migration_and_boot(self):
         self.log.write_text((ROOT / 'test/fixtures/update-4.0.4.log').read_text())
         self.marker(22)  # 07:57:41 local
