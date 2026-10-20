@@ -33,8 +33,10 @@ items = [{'name': 't3code-nightly-bin-' + 'long-package-name-' * 5,
           'op': 'upgraded', 'from': '0.1.1_nightly.20261017.3238-' + '1' * 32,
           'to': '0.1.1_nightly.20261018.3302-' + '2' * 32}] * 40
 responses = {
-    'sessions': {'sessions': [session, {**session, 'id': '20261017T061200Z',
-                                      'label': '17 Oct 08:12'}]},
+    'sessions': {'defaultSessionId': session['id'],
+                 'sessions': [{**session, 'id': '20261019T052000Z', 'label': '19 Oct 07:20',
+                               'counts': {'total': 0}, 'incomplete': False},
+                              session, {**session, 'id': '20261017T061200Z', 'label': '17 Oct 08:12'}]},
     'show': {'session': session, 'groups': [{'id': 'apps', 'title': 'Apps', 'items': items}],
              'currentRebootRequest': 'pending'},
     'notes': {'status': 'ok', 'releases': [{
@@ -175,6 +177,8 @@ ShellRoot {
       if (stage === 0) {
         window = find(viewer, "readingWindow")
         check(window !== null, "normal window loads")
+        check(viewer.sessionIndex === 1 && viewer.session.id === viewer.sessions[1].id,
+          "viewer opens the CLI default behind a newer no-op")
         Commons.Style.spacingScale = 1
         stage = 1
       } else if (stage === 1) {
@@ -207,6 +211,7 @@ ShellRoot {
         stage = 5
       } else {
         check(viewer.opened && window.visible && viewer.session, "viewer reopens after native close")
+        check(viewer.sessionIndex === 1, "reopening preserves the CLI default selection")
         viewer.dismiss()
         check(!viewer.opened && runner.closeCalls === 2, "keyboard dismissal uses same host lifecycle")
         console.log("WINDOW_OK")

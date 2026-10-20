@@ -184,6 +184,8 @@ Item {
     root.sessionsError = r.error
     root.currentRebootRequest = r.currentRebootRequest || "absent"
     var index = 0
+    for (var j = 0; j < r.sessions.length; j++)
+      if (r.sessions[j].id === r.defaultSessionId) { index = j; break }
     if (root.requestedSessionId)
       for (var i = 0; i < r.sessions.length; i++)
         if (r.sessions[i].id === root.requestedSessionId) { index = i; break }

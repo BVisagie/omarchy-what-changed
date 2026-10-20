@@ -22,6 +22,15 @@ commands are admitted within one hour of the last recognized activity; accepted
 commands extend that rolling window. Matching is heuristic: a manual command
 with the same shape can be indistinguishable from an update step.
 
+No-op attempts remain in the chronological session history. The bar, viewer's
+initial selection and CLI defaults prefer the newest session with package
+changes (`counts.total > 0`) or an incomplete transaction. A later attempt
+with neither does not replace that session or create an unread notification.
+The CLI supplies this selection as `defaultSessionId`; the viewer does not
+infer it from package counts. Explicit session IDs still open no-op attempts.
+If every session is a no-op, status stays quiet and a manually opened viewer
+shows the newest attempt.
+
 | Invocation | Recognition |
 |---|---|
 | `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring` | Session start and update-keyring; `--needed` may also follow `--noconfirm` |
@@ -133,7 +142,7 @@ host's hide-and-unload lifecycle. The integration points are:
 
 | Depends on | Where | Used for |
 |---|---|---|
-| `pacman -Sy [--needed] --noconfirm archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
+| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
 | Stable restarts near the end; inspected upstream restarts before later steps | `bin/omarchy-update-restart` | The widget refreshing without a poller |
 | The orphan sweep omits `--noconfirm` | `bin/omarchy-update-orphan-pkgs` | Telling the sweep apart from `omarchy pkg remove` |
 | The AUR step runs `yay -Sua`, never `--needed` | `bin/omarchy-update-aur-pkgs` | Telling it apart from `omarchy pkg aur add` |

@@ -9,6 +9,12 @@ and flags. This page covers session ids, exit codes and the `--json` contracts.
 A session id may be given in full (`20260908T184129Z`) or as a prefix. Where a
 prefix matches more than one session, the newest match wins.
 
+With no ID, or with `latest`, commands prefer the newest session with package
+changes (`counts.total > 0`) or an incomplete transaction. No-op attempts stay
+in history and are available by ID or prefix. If none qualifies, viewing
+commands fall back to the newest attempt, `status.newest` is null and
+`mark-read` leaves the read marker unchanged.
+
 ## Exit status
 
 | Exit | Means |
@@ -33,6 +39,7 @@ on purpose.
 {
   "schemaVersion": 1,
   "currentRebootRequest": "absent",
+  "defaultSessionId": "20260908T184129Z",
   "sessions": [
     {
       "id": "20260908T184129Z",
@@ -68,7 +75,11 @@ on purpose.
 ```
 
 Ids are the session start in UTC (`YYYYMMDDTHHMMSSZ`); `label` is local time for
-display. `finishedAt` records only recognized update activity; candidate
+display. Sessions remain newest first, including no-op attempts. `isLatest`
+identifies the chronologically newest attempt. `defaultSessionId` names the
+newest session with package changes or an incomplete transaction, or is null
+if none qualifies. The viewer uses this ID for its initial selection.
+`finishedAt` records only recognized update activity; candidate
 transactions never advance it. `incomplete` means an owned pacman transaction
 started without completing, not that the whole update succeeded or failed.
 
@@ -136,9 +147,11 @@ have exceeded the output cap.
   "newest": { "…a session, or null…" } }
 ```
 
-`unread` is `newest.id !== lastRead`. An absent marker means first run: the
-newest session is adopted so the bar starts quiet. An unreadable marker counts
-as unread, because claiming "all read" would swallow a real one.
+`newest` is the session named by `defaultSessionId`, so a no-op rerun cannot
+hide the actual update. `unread` is true when `newest` exists and
+`newest.id !== lastRead`. An absent marker means first run: this session is
+adopted so the bar starts quiet. An unreadable marker counts as unread when
+there is such a session, because claiming "all read" would swallow a real one.
 
 ```json
 { "schemaVersion": 1,

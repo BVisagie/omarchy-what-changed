@@ -204,8 +204,8 @@ Migrations
 | `what-changed show [id]` | What landed (the default command) |
 | `what-changed notes [id]` | Release notes for that session's jump |
 | `what-changed compare-url [id]` | The GitHub compare URL for the jump |
-| `what-changed status` | The newest session, and whether it has been read |
-| `what-changed mark-read [id]` | Record a session as read (default: the newest) |
+| `what-changed status` | The newest session with package changes or an incomplete transaction, and whether it has been read |
+| `what-changed mark-read [id]` | Record a session as read (default: the session selected by `status`) |
 
 | Flag | Does |
 |---|---|

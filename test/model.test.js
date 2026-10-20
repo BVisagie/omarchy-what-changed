@@ -335,5 +335,20 @@ console.log('accuracy intake and historical presentation')
   is('list intake keeps current request', M.parseSessions(JSON.stringify({sessions: [raw.session], currentRebootRequest: 'pending'})).currentRebootRequest, 'pending')
 }
 console.log('')
+console.log('default session intake')
+{
+  const sessions = [{id: 'noop'}, {id: 'update'}]
+  const parsed = M.parseSessions(JSON.stringify({sessions, defaultSessionId: 'update', evilField: true}))
+  is('the CLI default survives intake', parsed.defaultSessionId, 'update')
+  is('unknown list fields are dropped', parsed.evilField, undefined)
+  is('older payloads have no default ID', M.parseSessions(JSON.stringify({sessions})).defaultSessionId, '')
+  is('a null default ID stays empty', M.parseSessions(JSON.stringify({sessions, defaultSessionId: null})).defaultSessionId, '')
+  const longHistory = Array.from({length: 60}, (_, i) => ({id: 'noop-' + i})).concat({id: 'update'})
+  const bounded = M.parseSessions(JSON.stringify({sessions: longHistory, defaultSessionId: 'update'}))
+  is('the session limit still applies', bounded.sessions.length, 50)
+  is('the newest history entry is retained', bounded.sessions[0].id, 'noop-0')
+  is('the CLI default remains reachable beyond the limit', bounded.sessions[49].id, 'update')
+}
+console.log('')
 console.log(pass + ' passed, ' + fail + ' failed')
 process.exit(fail === 0 ? 0 : 1)
