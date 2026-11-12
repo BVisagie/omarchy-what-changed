@@ -3,7 +3,8 @@
 #
 # Sessions come out of /var/log/pacman.log. omarchy-update-keyring always runs
 # `pacman -Sy --needed --noconfirm archlinux-keyring` (older versions omit
-# --needed), so that invocation marks the head of every `omarchy update`.
+# --needed; 4.5 appends the other installed keyrings), so that invocation marks
+# the head of every `omarchy update`.
 # Everything up to the next one is a single session, however many pacman
 # transactions it took. Recognition and completion-marker
 # inference below distinguish primary changes from uncertain nearby activity.
@@ -113,8 +114,10 @@ parse_log() {
 
     # Share the start marker with ownership recognition. --needed can skip
     # the keyring transaction entirely; the invocation still starts a session.
+    # Omarchy 4.5 refreshes every installed keyring in the same invocation,
+    # archlinux-keyring first.
     function is_session_start(c) {
-      return c ~ /^pacman -Sy (--noconfirm|--needed --noconfirm|--noconfirm --needed) (-- )?archlinux-keyring$/
+      return c ~ /^pacman -Sy (--noconfirm|--needed --noconfirm|--noconfirm --needed) (-- )?archlinux-keyring( [a-z0-9][a-z0-9@._+-]*-keyring)*$/
     }
 
     # Recognition admits only known update commands to the rolling window.
@@ -202,6 +205,9 @@ parse_log() {
     cat == "PACMAN" && substr(rest, 1, 8) == "Running " {
       cmd = substr(rest, 9)
       if (length(cmd) >= 2) cmd = substr(cmd, 2, length(cmd) - 2)
+      # Omarchy 4.5 runs update transactions through systemd-run, which logs
+      # pacman by its absolute path.
+      if (index(cmd, "/usr/bin/pacman ") == 1) cmd = substr(cmd, 10)
       if (is_session_start(cmd)) reset_session(ts)
       else flush_command()
       if (!started) next
