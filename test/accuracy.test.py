@@ -118,6 +118,32 @@ class Accuracy(unittest.TestCase):
                     self.cli('mark-read', json_output=False)
                     self.assertFalse(self.cli('status')['unread'])
 
+    def test_omarchy_45_update_commands(self):
+        # Command lines as Omarchy 4.5 logs them: every installed keyring in
+        # one invocation, and the system step by pacman's absolute path.
+        system = '/usr/bin/pacman -Syu --noconfirm --overwrite /usr/share/omarchy/*'
+        for argv in ['pacman -Sy --needed --noconfirm archlinux-keyring omarchy-keyring',
+                     'pacman -Sy --needed --noconfirm archlinux-keyring omarchy-keyring archlinuxarm-keyring']:
+            with self.subTest(argv=argv):
+                self.log.write_text(update())
+                self.cli('mark-read', json_output=False)
+                previous = self.cli('status')
+                with self.log.open('a') as log:
+                    log.write(command(5000, argv)
+                              + transaction(5001, system, ['upgraded omarchy (4.0.4-1 -> 4.5.0-3)',
+                                                           'upgraded yt-dlp (1 -> 2)']))
+                sessions = self.cli('sessions')['sessions']
+                self.assertEqual(len(sessions), 2)
+                latest = sessions[0]
+                self.assertEqual(latest['startedAt'], stamp(5000))
+                self.assertEqual(latest['counts']['total'], 2)
+                self.assertEqual(latest['nearbyCounts']['total'], 0)
+                self.assertEqual(latest['omarchy']['to'], '4.5.0-3')
+                status = self.cli('status')
+                self.assertEqual(status['newest']['id'], latest['id'])
+                self.assertEqual(status['lastRead'], previous['newest']['id'])
+                self.assertTrue(status['unread'])
+
     def test_needed_keyring_noop_sessions(self):
         argv = 'pacman -Sy --needed --noconfirm archlinux-keyring'
         self.log.write_text(command(0, argv) + command(1, SYSTEM))
@@ -200,7 +226,9 @@ class Accuracy(unittest.TestCase):
                      'pacman -S --needed --noconfirm archlinux-keyring',
                      'pacman -Sy --needed archlinux-keyring',
                      'pacman -Sy --needed --noconfirm archlinux-keyring-extra',
-                     'pacman -Sy --needed --noconfirm archlinux-keyring extra']:
+                     'pacman -Sy --needed --noconfirm archlinux-keyring extra',
+                     'pacman -Sy --needed --noconfirm archlinux-keyring omarchy-keyring extra',
+                     'pacman -Sy --needed --noconfirm omarchy-keyring archlinux-keyring']:
             with self.subTest(argv=argv):
                 self.log.write_text(update() + transaction(5000, argv, ['installed extra (1)']))
                 sessions = self.cli('sessions')['sessions']

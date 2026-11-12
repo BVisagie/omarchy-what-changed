@@ -17,6 +17,10 @@ Every `omarchy update` begins by running
 an already current keyring and no package transaction follows. Older invocations
 without `--needed` are also recognized. The parser accepts either order of
 `--needed` and `--noconfirm` and an optional `--` before the package name.
+Omarchy 4.5 refreshes every installed keyring in the same invocation, so other
+`*-keyring` packages may follow `archlinux-keyring`. It also runs the system
+step through `systemd-run`, which logs `/usr/bin/pacman`; the parser treats
+that path as plain `pacman` for every command form below.
 The log order splits sessions at each such invocation. Recognized update
 commands are admitted within one hour of the last recognized activity; accepted
 commands extend that rolling window. Matching is heuristic: a manual command
@@ -33,7 +37,7 @@ shows the newest attempt.
 
 | Invocation | Recognition |
 |---|---|
-| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring` | Session start and update-keyring; `--needed` may also follow `--noconfirm` |
+| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring [<other>-keyring …]` | Session start and update-keyring; `--needed` may also follow `--noconfirm` |
 | `pacman -S --noconfirm --needed [--] omarchy-keyring` | First-run keyring install |
 | `pacman -Syu … --overwrite /usr/share/omarchy/*` | System package update |
 | `pacman -U … --config /etc/pacman.conf … /.cache/yay/…` or `/.cache/paru/…`, without `--needed` | AUR update |
@@ -132,6 +136,9 @@ These are inspected snapshots, not a guarantee for future upstream changes.
 Session recognition was also checked on **20 October 2026** against the
 installed 4.0.6 updater and local pacman history spanning 4.0.5 to 4.0.6,
 including the new `--needed` keyring invocation and no-op update attempts.
+It was checked again on **12 November 2026** against the installed 4.5.0
+updater and local history spanning 4.0.6 to 4.5.0, including the combined
+keyring invocation and the `/usr/bin/pacman` system step.
 The normal-window viewer was also checked on **19 October 2026** with Omarchy
 4.0.5 and Quickshell 0.3.2 on one monitor. Repeat desktop interaction checks
 before publishing; multi-monitor placement remains unverified.
@@ -142,7 +149,7 @@ host's hide-and-unload lifecycle. The integration points are:
 
 | Depends on | Where | Used for |
 |---|---|---|
-| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring` runs first | `bin/omarchy-update-keyring` | The session start marker |
+| `pacman -Sy [--needed] --noconfirm [--] archlinux-keyring [<other>-keyring …]` runs first | `bin/omarchy-update-keyring` | The session start marker |
 | Stable restarts near the end; inspected upstream restarts before later steps | `bin/omarchy-update-restart` | The widget refreshing without a poller |
 | The orphan sweep omits `--noconfirm` | `bin/omarchy-update-orphan-pkgs` | Telling the sweep apart from `omarchy pkg remove` |
 | The AUR step runs `yay -Sua`, never `--needed` | `bin/omarchy-update-aur-pkgs` | Telling it apart from `omarchy pkg aur add` |
